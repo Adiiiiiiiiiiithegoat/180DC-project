@@ -1,6 +1,8 @@
 # Stockroom — inventory and stock tracker
 
-180DC NITK Tech Team, Dev Task 1. The full README (setup, environment,
+180DC NITK Tech Team, Dev Task 1. Live at https://180dc-project.vercel.app.
+
+The full README (setup, environment,
 architecture, schema, AI tools, methodologies, demo credentials, live URL)
 is written in Phase 7; `DESIGN.md` is the reference until then.
 
