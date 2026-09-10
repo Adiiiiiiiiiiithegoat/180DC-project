@@ -195,7 +195,7 @@ historical figure wrong.
 | 5 | Negative stock via another path | `CHECK (quantity_on_hand >= 0)` at the database level. |
 | 6 | History edited | `sales` and `stock_movements` are append-only. |
 | 7 | Floating-point money | Integers in paise throughout, formatted only at display. |
-| 8 | Proportional discount doesn't sum | Integer division, remainder to the largest line, assert parts equal whole. |
+| 8 | Proportional discount doesn't sum | Integer division, remainder to the largest line that can absorb it without going below zero, falling through to the next largest; assert parts equal whole. |
 | 9 | AI tool bypasses all of the above | Tools call the same service functions the UI calls. No tool touches SQL. |
 
 ### Isolation level
@@ -447,6 +447,13 @@ Four things, no more. All computed in SQL by the same functions the tools use.
 2. Top products by revenue — `getProductPerformance`
 3. Stock value on hand — `getInventoryStatus`
 4. Reorder attention card — `getReorderSuggestions`
+
+**Complete periods only.** Charts and time series drop any bucket the data
+does not fully cover. The seeded history starts and ends mid-week, so its first
+and last weeks are partial and would plot as false dips; the same goes for the
+week in progress on a live account. This is a Phase 6 requirement, built into
+`getSalesTimeSeries` itself, so the chart and the assistant both inherit it —
+not a Phase 7 chart fix.
 
 The check: for every chart and every README claim, one tool call should produce
 that number. If the answer is "two calls and some arithmetic", the tool is
