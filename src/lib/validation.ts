@@ -138,13 +138,80 @@ export const adjustStockInputSchema = createInsertSchema(stockMovements, {
   })
   .omit({ quantity: true });
 
-/** Settings the assistant is allowed to change. Never quantity — see section 8. */
-export const updateProductSettingsSchema = z.object({
-  productId: z.uuid(),
-  reorderPoint: z.number().int().min(0).optional(),
-  unitPrice: z.number().int().min(0).optional(),
-  leadTimeDays: z.number().int().min(0).optional(),
-  isActive: z.boolean().optional(),
+/**
+ * Settings the assistant is allowed to change: reorder point, price, active
+ * status. Never quantity or average cost — those are the ledger's (section 8).
+ * `.strict()` so a call carrying any other field is refused outright rather
+ * than having the field silently dropped.
+ */
+export const updateProductSettingsSchema = z
+  .object({
+    productId: z.uuid().describe("The product's id, from findProduct."),
+    reorderPoint: z.number().int().min(0).max(100_000).optional()
+      .describe("New reorder point, in units."),
+    unitPrice: z.number().int().min(0).max(100_000_000).optional()
+      .describe("New selling price in PAISE (₹1 = 100 paise, so ₹250 is 25000)."),
+    isActive: z.boolean().optional()
+      .describe("false hides the product from the sale screen; true restores it."),
+  })
+  .strict()
+  .refine((s) => s.reorderPoint !== undefined || s.unitPrice !== undefined || s.isActive !== undefined, {
+    message: "change at least one of reorderPoint, unitPrice, isActive",
+  });
+
+// ---------------------------------------------------------------------------
+// Analytics inputs (DESIGN.md section 8). These are the tool schemas the model
+// sees, so every field is described and every range is tight: an open model
+// picks arguments far more reliably from a narrow menu than from free text.
+// No schema has a user field; the account is the session's, always.
+// ---------------------------------------------------------------------------
+
+const days = (fallback: number) =>
+  z.number().int().min(1).max(365).default(fallback)
+    .describe(`Length of the window in whole days. Default ${fallback}.`);
+
+// Every window is made of complete IST days: it ends yesterday unless endDate
+// says earlier, and a later endDate is pulled back to yesterday (section 9).
+const endDate = z.iso.date().optional()
+  .describe("Last day of the window, YYYY-MM-DD, inclusive. Omit to end yesterday, the last complete day.");
+
+export const findProductInputSchema = z.object({
+  query: z.string().trim().min(1).max(100)
+    .describe("A product name, part of one, or a SKU, as it was asked for, e.g. \"pens\" or \"STN-PEN-10\"."),
+});
+
+export const inventoryStatusInputSchema = z.object({
+  filter: z.enum(["all", "low", "out"]).default("all")
+    .describe("low: at or below reorder point (includes out of stock). out: zero on hand. all: every active product."),
+});
+
+export const salesSummaryInputSchema = z.object({
+  days: days(30),
+  endDate,
+  compareToPrevious: z.boolean().default(true)
+    .describe("Also return the same-length window immediately before, and the change. Default true."),
+});
+
+export const salesTimeSeriesInputSchema = z.object({
+  granularity: z.enum(["day", "week"]).default("week"),
+  days: days(90),
+  endDate,
+});
+
+export const productPerformanceInputSchema = z.object({
+  days: days(30),
+  endDate,
+  sortBy: z.enum(["revenue", "units", "biggest_decline", "biggest_growth"]).default("revenue")
+    .describe("biggest_decline / biggest_growth sort by revenue change against the previous window."),
+  limit: z.number().int().min(1).max(50).optional()
+    .describe("Return only the first N products after sorting. Omit for all."),
+});
+
+export const reorderSuggestionsInputSchema = z.object({});
+
+export const stockHistoryInputSchema = z.object({
+  productId: z.uuid().describe("The product's id, from findProduct."),
+  days: days(30),
 });
 
 export type ProductInput = z.infer<typeof productInputSchema>;
@@ -152,3 +219,6 @@ export type ReceiveGoodsInput = z.input<typeof receiveGoodsInputSchema>;
 export type RecordSaleInput = z.input<typeof recordSaleInputSchema>;
 export type AdjustStockInput = z.infer<typeof adjustStockInputSchema>;
 export type UpdateProductSettingsInput = z.infer<typeof updateProductSettingsSchema>;
+export type SalesSummaryInput = z.input<typeof salesSummaryInputSchema>;
+export type SalesTimeSeriesInput = z.input<typeof salesTimeSeriesInputSchema>;
+export type ProductPerformanceInput = z.input<typeof productPerformanceInputSchema>;

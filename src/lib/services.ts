@@ -38,6 +38,7 @@ import {
   promotionInputSchema,
   receiveGoodsInputSchema,
   recordSaleInputSchema,
+  updateProductSettingsSchema,
 } from "./validation";
 
 /**
@@ -553,6 +554,17 @@ export async function updateProduct(
     }
     throw e;
   }
+}
+
+/**
+ * The assistant's only write (section 8): reorder point, price, active status.
+ * A narrower schema in front of the same updateProduct the product form uses,
+ * so the ownership check and the UPDATE are the ones already tested. Quantity
+ * is not in the schema; a call that names it is rejected, not trimmed.
+ */
+export async function updateProductSettings(userId: string, rawInput: unknown) {
+  const { productId, ...settings } = updateProductSettingsSchema.parse(rawInput);
+  return updateProduct(userId, productId, settings);
 }
 
 export async function createPromotion(userId: string, rawInput: unknown) {

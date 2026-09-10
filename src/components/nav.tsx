@@ -17,6 +17,8 @@ export async function Nav() {
         </Link>
         {session && (
           <>
+            <Link href="/dashboard" className="text-stone-600 hover:text-stone-900">Dashboard</Link>
+            <Link href="/assistant" className="text-stone-600 hover:text-stone-900">Assistant</Link>
             <Link href="/sale" className="text-stone-600 hover:text-stone-900">Sale</Link>
             <Link href="/receive" className="text-stone-600 hover:text-stone-900">Receive</Link>
             <Link href="/products" className="text-stone-600 hover:text-stone-900">Products</Link>

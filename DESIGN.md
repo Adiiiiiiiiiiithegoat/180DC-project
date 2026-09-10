@@ -178,6 +178,12 @@ All of it or none of it:
 
 Insufficient stock on any line rolls back everything.
 
+**Line revenue is `quantity × charged_price − discount_amount`.** The
+whole-line `discount_amount` absorbs the sale-level allocation and any rounding
+remainder, so nothing has to divide evenly into a per-unit price and a line is
+never split into two lines at adjacent prices. Line cost is
+`quantity × unit_cost`.
+
 **Price charged is stored on the line.** Historical sales are never repriced —
 joining to today's price list to compute last month's revenue makes every
 historical figure wrong.
@@ -195,7 +201,7 @@ historical figure wrong.
 | 5 | Negative stock via another path | `CHECK (quantity_on_hand >= 0)` at the database level. |
 | 6 | History edited | `sales` and `stock_movements` are append-only. |
 | 7 | Floating-point money | Integers in paise throughout, formatted only at display. |
-| 8 | Proportional discount doesn't sum | Integer division, remainder to the largest line that can absorb it without going below zero, falling through to the next largest; assert parts equal whole. |
+| 8 | Proportional discount doesn't sum | Integer division, remainder to the largest line that can absorb it without going below zero, falling through to the next largest; assert parts equal whole. A sale-level discount is validated upfront as no greater than the amount actually payable after promotions, and refused with a clear error if it isn't — so the allocation always has room. |
 | 9 | AI tool bypasses all of the above | Tools call the same service functions the UI calls. No tool touches SQL. |
 
 ### Isolation level

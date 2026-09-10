@@ -27,7 +27,7 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
       setError(error.message ?? "That did not work");
       return;
     }
-    router.push(mode === "sign-up" ? "/products" : "/sale");
+    router.push(mode === "sign-up" ? "/products" : "/dashboard");
     router.refresh();
   }
 

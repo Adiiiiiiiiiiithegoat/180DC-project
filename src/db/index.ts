@@ -1,7 +1,13 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import { Pool, types } from "pg";
 import * as schema from "./schema";
 import * as authSchema from "./auth-schema";
+
+// SUM() and COUNT() return bigint, which node-postgres hands back as a string
+// so nothing past 2^53 loses precision. Paise totals never get near that
+// (2^53 paise is about ₹90 lakh crore), so parse them to numbers once, here,
+// rather than wrapping every aggregate in Number().
+types.setTypeParser(types.builtins.INT8, Number);
 
 /**
  * Driver choice: `pg` (node-postgres) over Neon's HTTP driver.
