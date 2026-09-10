@@ -4,7 +4,11 @@
 
 The full README (setup, environment,
 architecture, schema, AI tools, methodologies, demo credentials, live URL)
-is written in Phase 7; `DESIGN.md` is the reference until then.
+is written in Phase 7.
+
+`DESIGN.md` documents the design decisions and the reasoning behind each one;
+`BUILD_PROMPT.md` is the phased build — seven phases, each with the
+verification that gated it.
 
 ## Design notes
 
