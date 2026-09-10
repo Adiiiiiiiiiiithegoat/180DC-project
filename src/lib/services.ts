@@ -28,7 +28,7 @@ import {
   stockMovements,
   suppliers,
 } from "../db/schema";
-import { priceBasket, type Promotion } from "./pricing";
+import { PricingError, priceBasket, type PriceBasketResult, type Promotion } from "./pricing";
 import { isUniqueViolation } from "./pg-error";
 import {
   adjustStockInputSchema,
@@ -279,16 +279,24 @@ export async function recordSale(
       // Whatever the client displayed was a preview. A line without a unitPrice
       // is priced from the product as it is NOW, not as it was when the page
       // loaded.
-      const priced = priceBasket(
-        input.lines.map((l) => ({
-          productId: l.productId,
-          quantity: l.quantity,
-          unitPrice: l.unitPrice ?? owned.get(l.productId)!.unitPrice,
-        })),
-        promoRows as Promotion[],
-        now,
-        input.saleDiscount ?? 0,
-      );
+      let priced: PriceBasketResult;
+      try {
+        priced = priceBasket(
+          input.lines.map((l) => ({
+            productId: l.productId,
+            quantity: l.quantity,
+            unitPrice: l.unitPrice ?? owned.get(l.productId)!.unitPrice,
+          })),
+          promoRows as Promotion[],
+          now,
+          input.saleDiscount ?? 0,
+        );
+      } catch (e) {
+        // A basket that cannot be priced as asked (a sale discount bigger than
+        // what is left to pay) is the caller's mistake: 400, with the reason.
+        if (e instanceof PricingError) throw new ServiceError("invalid_input", e.message);
+        throw e;
+      }
 
       // "A mismatch stops and re-displays." If the client says what total it
       // showed and the server disagrees — a price edited or a promotion ended

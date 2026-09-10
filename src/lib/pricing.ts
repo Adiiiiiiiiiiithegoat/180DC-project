@@ -10,6 +10,7 @@
  * Money is integers in paise throughout. Every arithmetic step here is integer
  * arithmetic; there is no float anywhere in this file.
  */
+import { formatPaise } from "./money";
 
 export type BasketLine = {
   productId: string;
@@ -81,6 +82,18 @@ export type PriceBasketResult = {
   total: number;
 };
 
+/**
+ * A basket that cannot be priced as asked — for now, a sale discount larger
+ * than what is left to pay. The service layer turns it into a 400 with this
+ * message, and the sale screen shows it in place of a total.
+ */
+export class PricingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PricingError";
+  }
+}
+
 function assertInt(value: number, what: string): void {
   if (!Number.isInteger(value)) {
     throw new Error(`${what} must be an integer number of paise, got ${value}`);
@@ -119,10 +132,16 @@ export function selectPromotion(
 /**
  * Splits `discount` across `amounts` in proportion to each amount.
  *
- * DESIGN section 5, rule 8. Integer division drops fractions, so the parts
- * would sum to less than the whole; the remainder goes to the largest line and
- * the result is asserted to sum exactly. Ties on "largest" break by lowest
- * index, so the allocation is deterministic.
+ * DESIGN section 5, rule 8. Integer division drops fractions, so the floored
+ * parts sum to less than the whole. The remainder goes to the largest line
+ * that can absorb it: normally the largest line outright, but a discount close
+ * to the whole basket can leave the largest line with less headroom than the
+ * remainder, and a line must never be discounted below zero. Then it falls
+ * through to the next largest, and only if no single line can take all of it
+ * is it spread down the lines in size order — which always fits, because the
+ * total headroom is at least the remainder when discount <= total.
+ *
+ * Ties on size break by lowest index, so the allocation is deterministic.
  */
 export function allocateDiscount(
   amounts: readonly number[],
@@ -130,29 +149,41 @@ export function allocateDiscount(
 ): number[] {
   amounts.forEach((a, i) => assertInt(a, `amounts[${i}]`));
   assertInt(discount, "discount");
-  if (discount < 0) throw new Error("discount must not be negative");
+  if (discount < 0) throw new PricingError("a discount cannot be negative");
 
   const total = amounts.reduce((s, a) => s + a, 0);
-  if (discount === 0 || total === 0) return amounts.map(() => 0);
-  // Never discount more than the basket is worth; the caller has clamped
-  // already, but a proportional split of an over-large discount would produce
-  // negative charged prices.
-  const capped = Math.min(discount, total);
-
-  const parts = amounts.map((a) => Math.floor((capped * a) / total));
-  const remainder = capped - parts.reduce((s, p) => s + p, 0);
-
-  // Remainder to the largest line. Not the first, not spread a paise at a
-  // time: one deterministic destination.
-  let largest = 0;
-  for (let i = 1; i < amounts.length; i++) {
-    if (amounts[i] > amounts[largest]) largest = i;
+  if (discount > total) {
+    throw new PricingError(`a discount of ${discount} is more than the ${total} it applies to`);
   }
-  parts[largest] += remainder;
+  if (discount === 0) return amounts.map(() => 0);
 
-  const sum = parts.reduce((s, p) => s + p, 0);
-  if (sum !== capped) {
-    throw new Error(`allocation does not sum: ${sum} !== ${capped}`);
+  // BigInt for the product: discount x amount can pass 2^53 on a large
+  // basket, where a float division would stop being an exact floor.
+  const parts = amounts.map((a) => Number((BigInt(discount) * BigInt(a)) / BigInt(total)));
+  let remainder = discount - parts.reduce((s, p) => s + p, 0);
+
+  const bySize = amounts
+    .map((_, i) => i)
+    .sort((x, y) => amounts[y] - amounts[x] || x - y);
+  const headroom = (i: number) => amounts[i] - parts[i];
+
+  const taker = bySize.find((i) => headroom(i) >= remainder);
+  if (taker !== undefined) {
+    parts[taker] += remainder;
+  } else {
+    for (const i of bySize) {
+      const take = Math.min(headroom(i), remainder);
+      parts[i] += take;
+      remainder -= take;
+      if (remainder === 0) break;
+    }
+  }
+
+  if (parts.reduce((s, p) => s + p, 0) !== discount) {
+    throw new Error("allocation does not sum to the discount");
+  }
+  if (parts.some((p, i) => p > amounts[i])) {
+    throw new Error("allocation discounted a line below zero");
   }
   return parts;
 }
@@ -349,28 +380,42 @@ export function priceBasket(
     }
   }
 
-  if (saleDiscount > 0) {
-    assertInt(saleDiscount, "saleDiscount");
-    const revenues = pricedLines.map(lineRevenue);
-    const capped = Math.min(saleDiscount, revenues.reduce((s, r) => s + r, 0));
+  // Validated up front and refused with a clear message, never silently
+  // capped: a cashier who types 900 on a 500 basket has made a mistake the
+  // screen should show, not one the till should quietly correct.
+  assertInt(saleDiscount, "saleDiscount");
+  if (saleDiscount < 0) throw new PricingError("a sale discount cannot be negative");
+  if (saleDiscount > subtotal) {
+    throw new PricingError(
+      `a sale discount of ${formatPaise(saleDiscount)} is more than the subtotal of ${formatPaise(subtotal)}`,
+    );
+  }
+  const revenues = pricedLines.map(lineRevenue);
+  const payable = revenues.reduce((s, r) => s + r, 0);
+  // Stricter than the subtotal whenever a promotion applies: three mugs at 250
+  // under buy-2-get-1 have a 750 subtotal but only 500 left to discount.
+  if (saleDiscount > payable) {
+    throw new PricingError(
+      `a sale discount of ${formatPaise(saleDiscount)} is more than the ${formatPaise(payable)} left to pay after promotions`,
+    );
+  }
 
+  if (saleDiscount > 0) {
     // DESIGN section 5, rule 8, one level: split across lines by line total,
-    // remainder to the largest line, parts asserted to sum to the whole. Each
-    // share lands in discountAmount; the per-unit price is left alone, so a
-    // line is never split to absorb a share that does not divide by quantity.
-    const parts = allocateDiscount(revenues, capped);
+    // remainder to the largest line that can absorb it, parts asserted to sum
+    // to the whole. Each share lands in discountAmount; the per-unit price is
+    // left alone, so a line is never split to absorb a share that does not
+    // divide by its quantity.
+    const parts = allocateDiscount(revenues, saleDiscount);
     parts.forEach((part, i) => {
       pricedLines[i].discountAmount += part;
     });
-
-    if (capped > 0) {
-      discounts.push({
-        promotionId: null,
-        productId: null,
-        label: "Sale discount",
-        amount: capped,
-      });
-    }
+    discounts.push({
+      promotionId: null,
+      productId: null,
+      label: "Sale discount",
+      amount: saleDiscount,
+    });
   }
 
   const total = pricedLines.reduce((s, l) => s + lineRevenue(l), 0);
@@ -385,16 +430,7 @@ export function priceBasket(
   for (const line of pricedLines) {
     assertInt(line.discountAmount, "discountAmount");
     if (line.discountAmount < 0) throw new Error("discountAmount must not be negative");
-    // Rule 8 sends the whole remainder to the largest line. When a discount
-    // comes within a few paise of the entire basket, that remainder can exceed
-    // what the largest line is worth. Refuse rather than write a line with
-    // negative revenue.
-    if (lineRevenue(line) < 0) {
-      throw new Error(
-        `discount leaves line for ${line.productId} at ${lineRevenue(line)} paise; ` +
-          `it cannot be allocated without a negative line`,
-      );
-    }
+    if (lineRevenue(line) < 0) throw new Error("line revenue must not be negative");
   }
   if (total < 0) throw new Error("total must not be negative");
   if (discountTotal !== discounts.reduce((s, d) => s + d.amount, 0)) {

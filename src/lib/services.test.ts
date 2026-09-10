@@ -327,6 +327,28 @@ test("rule 2: a client total the server disagrees with stops the sale and writes
   assert.equal(sale.total, 30000);
 });
 
+test("a sale discount bigger than the basket is a clear invalid_input and writes nothing", async () => {
+  const userId = await newUser("t3d");
+  const product = await newProduct(userId, { unitPrice: 25000 });
+  await receiveGoods(userId, {
+    lines: [{ productId: product.id, quantity: 5, unitCost: 8000 }],
+  });
+  await assert.rejects(
+    () =>
+      recordSale(userId, {
+        idempotencyKey: "t3d-too-much",
+        saleDiscount: 30000,
+        lines: [{ productId: product.id, quantity: 1 }],
+      }),
+    (e: unknown) =>
+      e instanceof ServiceError &&
+      e.code === "invalid_input" &&
+      /more than the subtotal/.test(e.message),
+  );
+  assert.equal((await db.select().from(sales).where(eq(sales.userId, userId))).length, 0);
+  assert.equal((await reload(product.id)).quantityOnHand, 5);
+});
+
 test("4. the same idempotency key twice creates one sale and returns the same id", async () => {
   const userId = await newUser("t4");
   const product = await newProduct(userId);

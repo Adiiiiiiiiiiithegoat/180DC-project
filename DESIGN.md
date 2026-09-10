@@ -321,6 +321,8 @@ CREATE TABLE sale_lines (
   quantity        integer NOT NULL CHECK (quantity > 0),
   list_price      integer NOT NULL,     -- what the product said at the time
   charged_price   integer NOT NULL,     -- what was actually charged, 0 for free units
+  discount_amount integer NOT NULL DEFAULT 0
+                    CHECK (discount_amount >= 0),  -- whole-line paise, see below
   unit_cost       integer NOT NULL,     -- average cost stamped at sale time
   promotion_id    uuid REFERENCES promotions(id),   -- why it was discounted
   is_free_unit    boolean NOT NULL DEFAULT false
@@ -341,6 +343,15 @@ CREATE TABLE stock_movements (
 CREATE INDEX movements_product_time_idx ON stock_movements (product_id, created_at DESC);
 CREATE INDEX movements_user_time_idx    ON stock_movements (user_id, created_at DESC);
 ```
+
+On `sale_lines`, `list_price`, `charged_price` and `unit_cost` are per unit;
+`discount_amount` is a whole-line amount. It holds what cannot be expressed as
+a whole-paise change to the per-unit price: the line's share of a sale-level
+discount, and the rounding remainder of a percent-off promotion floored on the
+line total. A line is never split into two lines at adjacent prices to avoid it.
+
+- **Line revenue** = `quantity × charged_price − discount_amount`
+- **Line cost** = `quantity × unit_cost`
 
 `sales`, `sale_lines` and `stock_movements` are append-only by convention,
 enforced in the service layer: nothing in the codebase issues an `UPDATE` or
