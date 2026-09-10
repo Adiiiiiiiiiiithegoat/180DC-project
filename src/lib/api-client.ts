@@ -11,8 +11,8 @@ export class ApiError extends Error {
 
 export async function api<T = Record<string, unknown>>(
   path: string,
-  method: "POST" | "PATCH",
-  body: unknown,
+  method: "POST" | "PATCH" | "DELETE",
+  body?: unknown,
 ): Promise<T> {
   const res = await fetch(path, {
     method,

@@ -9,6 +9,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -81,6 +82,9 @@ export const receipts = pgTable(
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     source: text("source").notNull().default("manual"),
+    // An upload's draft: what the document said, line by line, and how each
+    // line matched (section 3). Data only — the file itself is never stored.
+    extraction: jsonb("extraction"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

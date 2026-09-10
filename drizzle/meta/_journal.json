@@ -22,6 +22,13 @@
       "when": 1789023313464,
       "tag": "0002_sale_line_discount_amount",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789077616762,
+      "tag": "0003_receipt_extraction",
+      "breakpoints": true
     }
   ]
 }

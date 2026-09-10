@@ -9,7 +9,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "verify:phase1": "tsx scripts/verify-phase1.ts --reset",
-    "test": "tsx --conditions=react-server --test src/**/*.test.ts",
+    "test": "tsx --conditions=react-server --test --test-concurrency=1 src/**/*.test.ts",
+    "test:live": "tsx --conditions=react-server --test src/lib/extraction.live.ts",
     "seed": "tsx scripts/seed.ts --env .env.development.local --pool 20 --reset",
     "seed:report": "tsx scripts/seed-report.ts --env .env.development.local",
     "walkthrough": "tsx scripts/walkthrough.ts --env .env.development.local"
@@ -30,6 +31,8 @@
     "react-dom": "19.2.8",
     "recharts": "^3.10.1",
     "server-only": "^0.0.1",
+    "sharp": "^0.35.4",
+    "unpdf": "^1.8.1",
     "zod": "^4.5.4"
   },
   "devDependencies": {

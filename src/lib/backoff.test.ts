@@ -53,6 +53,8 @@ test("a daily limit (wait over a minute) and a non-transient error are thrown at
   const noSleep = async () => assert.fail("must not wait");
   await assert.rejects(withBackoff(() => Promise.reject(limited({ "retry-after": "3600" })), () => {}, noSleep));
   await assert.rejects(withBackoff(() => Promise.reject(limited({}, 400)), () => {}, noSleep));
+  // Groq's "request too large for your per-minute limit": a 429 no wait can fix.
+  await assert.rejects(withBackoff(() => Promise.reject(limited({ "x-should-retry": "false" })), () => {}, noSleep));
 });
 
 test("gives up after five attempts rather than retrying forever", async () => {

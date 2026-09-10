@@ -26,6 +26,7 @@ import {
   saleLines,
   sales,
   stockMovements,
+  supplierAliases,
   suppliers,
 } from "../db/schema";
 import { PricingError, priceBasket, type PriceBasketResult, type Promotion } from "./pricing";
@@ -54,7 +55,12 @@ export type ServiceErrorCode =
   | "not_found"
   | "invalid_input"
   | "conflict"
-  | "price_changed";
+  | "price_changed"
+  // Document upload (section 3): not a file we accept, a file we could not
+  // read as a delivery note, and the model's free tier saying wait.
+  | "unsupported_file"
+  | "unreadable_document"
+  | "rate_limited";
 
 export class ServiceError extends Error {
   constructor(
@@ -79,7 +85,21 @@ export type InternalOptions = {
    * price a sale inside a promotion that has already ended.
    */
   at?: Date;
+  /**
+   * Confirm this upload draft rather than create a new receipt. It comes from
+   * the confirm route's URL, never a body, and is checked against the session
+   * user in the same WHERE clause that flips the status — so a draft that is
+   * someone else's, or already confirmed, is simply not found.
+   */
+  draftId?: string;
 };
+
+/**
+ * An uploaded line's text reduced to what identifies it, so "Toor Dal  1 KG"
+ * and "toor dal 1 kg" are one supplier alias. Every alias is written and looked
+ * up through this.
+ */
+export const normalizeLineText = (text: string) => text.trim().replace(/\s+/g, " ").toLowerCase();
 
 const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -114,6 +134,11 @@ async function loadOwnedProducts(
 /**
  * DESIGN.md section 3. One transaction: the receipt, its lines, the `receipt`
  * movements, the incremented quantity, and the recalculated weighted average.
+ *
+ * Manual entry and a confirmed upload both come through here. The only
+ * difference an upload makes: the draft row becomes the receipt (instead of a
+ * new row), its document total is checked against the lines, and each line's
+ * printed text is learned as a supplier alias.
  */
 export async function receiveGoods(
   userId: string,
@@ -151,30 +176,73 @@ export async function receiveGoods(
       supplierId = supplier.id;
     }
 
-    const [receipt] = await tx
-      .insert(receipts)
-      .values({
-        userId,
-        supplierId,
-        reference: input.reference ?? null,
-        // Confirming a draft runs this same code path; a draft that has not
-        // been confirmed never reaches here, because a draft moves no stock.
-        status: "confirmed",
-        receivedAt: input.receivedAt ?? at,
-        confirmedAt: at,
-        source: input.source,
-        createdAt: at,
-      })
-      .returning();
+    const header = {
+      supplierId,
+      reference: input.reference ?? null,
+      status: "confirmed",
+      receivedAt: input.receivedAt ?? at,
+      confirmedAt: at,
+    };
+
+    let receipt;
+    if (options.draftId) {
+      // A draft moved no stock; this is the moment it does.
+      [receipt] = await tx
+        .update(receipts)
+        .set({ ...header, source: "upload" })
+        .where(
+          and(
+            eq(receipts.id, uuid.parse(options.draftId)),
+            eq(receipts.userId, userId),
+            eq(receipts.status, "draft"),
+          ),
+        )
+        .returning();
+      if (!receipt) throw new ServiceError("not_found", "no such draft for this account, or it is already confirmed");
+
+      // Section 3: the document's stated total against what is being confirmed.
+      const doc = receipt.extraction as { statedTotalPaise?: number | null; taxPaise?: number | null } | null;
+      const stated = doc?.statedTotalPaise ?? null;
+      const lines = input.lines.reduce((sum, l) => sum + l.quantity * l.unitCost, 0) + (doc?.taxPaise ?? 0);
+      if (stated !== null && stated !== lines && !input.acceptTotalMismatch) {
+        throw new ServiceError(
+          "conflict",
+          "the document's total does not match its lines; correct the lines or accept the difference",
+          { statedTotalPaise: stated, linesTotalPaise: lines },
+        );
+      }
+    } else {
+      [receipt] = await tx
+        .insert(receipts)
+        .values({ userId, ...header, source: input.source, createdAt: at })
+        .returning();
+    }
 
     await tx.insert(receiptLines).values(
       input.lines.map((line) => ({
         receiptId: receipt.id,
         productId: line.productId,
+        rawText: line.rawText ?? null,
         quantity: line.quantity,
         unitCost: line.unitCost,
       })),
     );
+
+    // What this supplier calls each product, confirmed by a person: next time
+    // the same text maps straight through. Deduplicated first, because one
+    // upsert cannot touch the same alias twice.
+    const aliases = new Map(
+      input.lines.filter((l) => l.rawText).map((l) => [normalizeLineText(l.rawText!), l.productId]),
+    );
+    if (supplierId && aliases.size > 0) {
+      await tx
+        .insert(supplierAliases)
+        .values([...aliases].map(([rawText, productId]) => ({ userId, supplierId, rawText, productId })))
+        .onConflictDoUpdate({
+          target: [supplierAliases.userId, supplierAliases.supplierId, supplierAliases.rawText],
+          set: { productId: sql`excluded.product_id` },
+        });
+    }
 
     // One movement per line, positive: goods arrived.
     await tx.insert(stockMovements).values(

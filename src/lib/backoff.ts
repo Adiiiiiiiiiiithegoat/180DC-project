@@ -28,9 +28,15 @@ export function retryAfterSeconds(headers: Record<string, string> | undefined, n
   return Number.isNaN(at) ? undefined : Math.max(0, (at - now) / 1000);
 }
 
-/** Rate limited, or the provider is briefly over capacity. Anything else is a real error. */
+/**
+ * Rate limited, or the provider is briefly over capacity. Anything else is a
+ * real error — including a 429 the provider marks `x-should-retry: false`:
+ * Groq's "request too large for your per-minute limit", which no wait fixes.
+ */
 const isTransient = (e: unknown): e is APICallError =>
-  APICallError.isInstance(e) && (e.statusCode === 429 || (e.statusCode ?? 0) >= 500);
+  APICallError.isInstance(e) &&
+  (e.statusCode === 429 || (e.statusCode ?? 0) >= 500) &&
+  e.responseHeaders?.["x-should-retry"] !== "false";
 
 export async function withBackoff<T>(
   call: () => PromiseLike<T>,

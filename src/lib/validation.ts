@@ -87,7 +87,12 @@ const receiptLineInputSchema = createInsertSchema(receiptLines, {
   unitCost: (s) => s.int().min(0),
 })
   .pick({ quantity: true, unitCost: true })
-  .extend({ productId: z.uuid() });
+  .extend({
+    productId: z.uuid(),
+    // An uploaded line's text as the document printed it. Stored on the line,
+    // and learned as a supplier alias so the same text matches itself next time.
+    rawText: z.string().trim().min(1).max(300).optional(),
+  });
 
 export const receiveGoodsInputSchema = z.object({
   supplierId: z.uuid().optional(),
@@ -98,6 +103,9 @@ export const receiveGoodsInputSchema = z.object({
   receivedAt: z.coerce.date().optional(),
   source: z.enum(["manual", "upload"]).default("manual"),
   lines: z.array(receiptLineInputSchema).min(1, "a receipt needs at least one line"),
+  // Confirming an upload whose document total disagrees with its lines needs
+  // this said out loud (section 3): a mismatch is never silently accepted.
+  acceptTotalMismatch: z.boolean().default(false),
 });
 
 export const recordSaleInputSchema = z.object({

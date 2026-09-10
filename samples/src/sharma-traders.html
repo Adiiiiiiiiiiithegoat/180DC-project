@@ -1,0 +1,42 @@
+<!-- Screenshot, then roughened by render.mjs into ../delivery-notes/sharma-traders-challan.jpg.
+     Deliberately messy: carbon-copy challan, handwriting, a struck-out quantity, a coffee ring, and a
+     grand total with two digits swapped (7,954 written, lines add up to 7,594). -->
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #6b5b4b; }
+  .paper {
+    width: 760px; margin: 40px auto; padding: 28px 34px 40px; transform: rotate(-2.6deg);
+    background: radial-gradient(circle at 78% 64%, transparent 52px, rgba(120,72,20,.22) 54px, rgba(120,72,20,.10) 60px, transparent 64px),
+                linear-gradient(170deg, #f3ecd8, #e9dfc4 60%, #ded2b3);
+    box-shadow: 0 10px 30px rgba(0,0,0,.5); font-family: "Courier New", monospace; color: #253a8a;
+  }
+  .hand { font-family: "Ink Free", "Segoe Print", cursive; color: #1b2466; font-size: 21px; }
+  h1 { text-align: center; margin: 0; font-size: 26px; letter-spacing: .12em; }
+  .sub { text-align: center; font-size: 13px; margin-bottom: 14px; }
+  .row { display: flex; justify-content: space-between; margin: 6px 0; font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #5566aa; padding: 6px 8px; font-size: 15px; height: 30px; }
+  th { font-weight: 700; }
+  td.n { text-align: right; }
+  s { color: #1b2466; }
+  .stamp { position: absolute; right: 70px; bottom: 60px; border: 3px solid rgba(180,30,30,.55); color: rgba(180,30,30,.55);
+           padding: 6px 14px; transform: rotate(-14deg); font: 700 18px "Segoe UI"; letter-spacing: .1em; }
+  .wrap { position: relative; }
+</style>
+<div class="paper wrap">
+  <h1>SHARMA TRADERS</h1>
+  <div class="sub">General Merchants &amp; Commission Agents · Car Street, Mangaluru · Mob 90000 00000</div>
+  <div class="row"><span>DELIVERY CHALLAN &nbsp; No. <span class="hand">1187</span></span><span>Date: <span class="hand">8/9/26</span></span></div>
+  <div class="row"><span>M/s <span class="hand">Demo Kirana Store, Surathkal</span></span></div>
+  <table>
+    <tr><th style="width:36px">No.</th><th>Particulars</th><th style="width:70px">Qty</th><th style="width:80px">Rate</th><th style="width:100px">Amount</th></tr>
+    <tr><td>1</td><td class="hand">Masala Chai 250g pkt</td><td class="n hand">24</td><td class="n hand">125</td><td class="n hand">3000</td></tr>
+    <tr><td>2</td><td class="hand">Toor Dal 1 kg</td><td class="n hand"><s>18</s> 15</td><td class="n hand">142</td><td class="n hand">2130</td></tr>
+    <tr><td>3</td><td class="hand">Salted Peanut 200gm</td><td class="n hand">20</td><td class="n hand">50</td><td class="n hand">1000</td></tr>
+    <tr><td>4</td><td class="hand">Glucose Biscuit 250g</td><td class="n hand">48</td><td class="n hand">30.50</td><td class="n hand">1464</td></tr>
+    <tr><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td></td><td style="text-align:right"><b>Grand Total ₹</b></td><td></td><td></td><td class="n hand" style="font-size:24px">7954/-</td></tr>
+  </table>
+  <div class="row" style="margin-top:22px"><span>Receiver's sign ________</span><span>For SHARMA TRADERS</span></div>
+  <div class="stamp">DELIVERED</div>
+</div>
