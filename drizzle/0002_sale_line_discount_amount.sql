@@ -1,0 +1,2 @@
+ALTER TABLE "sale_lines" ADD COLUMN "discount_amount" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "sale_lines" ADD CONSTRAINT "sale_lines_discount_amount_check" CHECK ("sale_lines"."discount_amount" >= 0);
