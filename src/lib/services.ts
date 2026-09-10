@@ -11,11 +11,12 @@
  *
  * Nothing here issues an UPDATE or a DELETE against `sales`, `sale_lines` or
  * `stock_movements`. They are append-only (section 5, rule 6); corrections are
- * reversing movements. The only table this file updates is `products`, whose
- * `quantity_on_hand` is a concurrency control point rather than a cache
+ * reversing movements. The stock-moving functions update only `products`,
+ * whose `quantity_on_hand` is a concurrency control point rather than a cache
  * (section 1).
  */
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { z } from "zod";
 import { db } from "../db";
 import {
   products,
@@ -25,11 +26,16 @@ import {
   saleLines,
   sales,
   stockMovements,
+  suppliers,
 } from "../db/schema";
 import { priceBasket, type Promotion } from "./pricing";
 import { isUniqueViolation } from "./pg-error";
 import {
   adjustStockInputSchema,
+  productInputSchema,
+  productUpdateSchema,
+  promotionActiveSchema,
+  promotionInputSchema,
   receiveGoodsInputSchema,
   recordSaleInputSchema,
 } from "./validation";
@@ -45,17 +51,36 @@ type Executor = typeof db | Transaction;
 export type ServiceErrorCode =
   | "insufficient_stock"
   | "not_found"
-  | "invalid_input";
+  | "invalid_input"
+  | "conflict"
+  | "price_changed";
 
 export class ServiceError extends Error {
   constructor(
     readonly code: ServiceErrorCode,
     message: string,
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ServiceError";
   }
 }
+
+/**
+ * Options only trusted internal code may pass. They are deliberately not part
+ * of any Zod schema, so no request body and no tool call can set them.
+ */
+export type InternalOptions = {
+  /**
+   * When the event is recorded as having happened. Defaults to now. It exists
+   * for the seed script, which replays 90 days of history through these same
+   * functions rather than around them. A caller who could choose this could
+   * price a sale inside a promotion that has already ended.
+   */
+  at?: Date;
+};
+
+const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * Confirms every product id belongs to this user, inside the transaction.
@@ -89,45 +114,85 @@ async function loadOwnedProducts(
  * DESIGN.md section 3. One transaction: the receipt, its lines, the `receipt`
  * movements, the incremented quantity, and the recalculated weighted average.
  */
-export async function receiveGoods(userId: string, rawInput: unknown) {
+export async function receiveGoods(
+  userId: string,
+  rawInput: unknown,
+  options: InternalOptions = {},
+) {
   const input = receiveGoodsInputSchema.parse(rawInput);
-  const now = new Date();
+  const at = options.at ?? new Date();
 
   return db.transaction(async (tx) => {
     const productIds = [...new Set(input.lines.map((l) => l.productId))];
     await loadOwnedProducts(tx, userId, productIds);
 
+    let supplierId: string | null = null;
+    if (input.supplierId) {
+      // A supplier id from the caller is checked for ownership like a product
+      // id: the foreign key alone would happily accept someone else's supplier.
+      const [owned] = await tx
+        .select({ id: suppliers.id })
+        .from(suppliers)
+        .where(and(eq(suppliers.id, input.supplierId), eq(suppliers.userId, userId)));
+      if (!owned) throw new ServiceError("not_found", "no such supplier for this account");
+      supplierId = owned.id;
+    } else if (input.supplierName) {
+      // Find-or-create by (user_id, name). The no-op update is what makes
+      // RETURNING hand back the existing row on conflict.
+      const [supplier] = await tx
+        .insert(suppliers)
+        .values({ userId, name: input.supplierName })
+        .onConflictDoUpdate({
+          target: [suppliers.userId, suppliers.name],
+          set: { name: sql`excluded.name` },
+        })
+        .returning({ id: suppliers.id });
+      supplierId = supplier.id;
+    }
+
     const [receipt] = await tx
       .insert(receipts)
       .values({
         userId,
-        supplierId: input.supplierId ?? null,
+        supplierId,
         reference: input.reference ?? null,
         // Confirming a draft runs this same code path; a draft that has not
         // been confirmed never reaches here, because a draft moves no stock.
         status: "confirmed",
-        receivedAt: input.receivedAt ?? now,
-        confirmedAt: now,
+        receivedAt: input.receivedAt ?? at,
+        confirmedAt: at,
         source: input.source,
+        createdAt: at,
       })
       .returning();
 
-    for (const line of input.lines) {
-      await tx.insert(receiptLines).values({
+    await tx.insert(receiptLines).values(
+      input.lines.map((line) => ({
         receiptId: receipt.id,
         productId: line.productId,
         quantity: line.quantity,
         unitCost: line.unitCost,
-      });
+      })),
+    );
 
-      await tx.insert(stockMovements).values({
+    // One movement per line, positive: goods arrived.
+    await tx.insert(stockMovements).values(
+      input.lines.map((line) => ({
         userId,
         productId: line.productId,
-        quantity: line.quantity, // positive: goods arrived
+        quantity: line.quantity,
         reason: "receipt",
         referenceId: receipt.id,
-      });
+        createdAt: at,
+      })),
+    );
 
+    // Row locks in one global order (product id) so two concurrent receipts, or
+    // a receipt racing a sale, can never wait on each other in a cycle. The
+    // sort is stable, so two lines for the same product keep their order.
+    const ordered = [...input.lines].sort((a, b) => byId(a.productId, b.productId));
+
+    for (const line of ordered) {
       /**
        * Weighted average cost, DESIGN.md section 2:
        *
@@ -178,18 +243,26 @@ export type RecordSaleResult = {
 export async function recordSale(
   userId: string,
   rawInput: unknown,
+  options: InternalOptions = {},
 ): Promise<RecordSaleResult> {
   const input = recordSaleInputSchema.parse(rawInput);
 
   // The clock is read here, once, and passed into the pure pricer. It is never
-  // accepted from the caller: a request that could choose `now` could revive an
-  // expired promotion.
-  const now = new Date();
+  // accepted from a request: see InternalOptions.
+  const now = options.at ?? new Date();
 
   try {
     return await db.transaction(async (tx) => {
       const productIds = [...new Set(input.lines.map((l) => l.productId))];
-      const byId = await loadOwnedProducts(tx, userId, productIds);
+      const owned = await loadOwnedProducts(tx, userId, productIds);
+
+      const inactive = [...owned.values()].filter((p) => !p.isActive);
+      if (inactive.length > 0) {
+        throw new ServiceError(
+          "invalid_input",
+          `cannot sell a deactivated product: ${inactive.map((p) => p.name).join(", ")}`,
+        );
+      }
 
       const promoRows = await tx
         .select()
@@ -203,24 +276,38 @@ export async function recordSale(
         );
 
       // Section 5, rule 2: the server prices at commit, inside the transaction.
-      // Whatever the client displayed was a preview.
+      // Whatever the client displayed was a preview. A line without a unitPrice
+      // is priced from the product as it is NOW, not as it was when the page
+      // loaded.
       const priced = priceBasket(
         input.lines.map((l) => ({
           productId: l.productId,
           quantity: l.quantity,
-          unitPrice: l.unitPrice ?? byId.get(l.productId)!.unitPrice,
+          unitPrice: l.unitPrice ?? owned.get(l.productId)!.unitPrice,
         })),
         promoRows as Promotion[],
         now,
         input.saleDiscount ?? 0,
       );
 
+      // "A mismatch stops and re-displays." If the client says what total it
+      // showed and the server disagrees — a price edited or a promotion ended
+      // since the page loaded — nothing is written and the server's pricing
+      // goes back so the screen can show the customer the real number.
+      if (input.expectedTotal !== undefined && input.expectedTotal !== priced.total) {
+        throw new ServiceError(
+          "price_changed",
+          `the total is now ${priced.total}, not ${input.expectedTotal}`,
+          { priced },
+        );
+      }
+
       // Cost is stamped from the product's average at this moment, so
       // historical margin never changes when costs later move (section 2).
       // Multiplied by the line quantity: a free-unit line is zero revenue but
       // full cost, so leaving the quantity out understates cost of goods.
       const costTotal = priced.lines.reduce(
-        (sum, l) => sum + l.quantity * byId.get(l.productId)!.averageCost,
+        (sum, l) => sum + l.quantity * owned.get(l.productId)!.averageCost,
         0,
       );
 
@@ -237,38 +324,35 @@ export async function recordSale(
         })
         .returning();
 
-      for (const line of priced.lines) {
-        const product = byId.get(line.productId)!;
-
-        await tx.insert(saleLines).values({
+      await tx.insert(saleLines).values(
+        priced.lines.map((line) => ({
           saleId: sale.id,
           productId: line.productId,
           quantity: line.quantity,
           listPrice: line.listPrice,
           chargedPrice: line.chargedPrice,
           discountAmount: line.discountAmount,
-          unitCost: product.averageCost,
+          unitCost: owned.get(line.productId)!.averageCost,
           promotionId: line.promotionId,
           isFreeUnit: line.isFreeUnit,
-        });
+        })),
+      );
 
-        // One movement per line, carrying that line's signed quantity —
-        // the same rule as receiving. Free-unit lines included: a BOGO free
-        // unit is zero revenue, one unit of stock, full cost, and omitting its
-        // movement would leave a phantom item on the shelf (section 4).
-        await tx.insert(stockMovements).values({
+      // One movement per line, carrying that line's signed quantity — the same
+      // rule as receiving. Free-unit lines included: a BOGO free unit is zero
+      // revenue, one unit of stock, full cost, and omitting its movement would
+      // leave a phantom item on the shelf (section 4).
+      await tx.insert(stockMovements).values(
+        priced.lines.map((line) => ({
           userId,
           productId: line.productId,
           quantity: -line.quantity,
           reason: "sale",
           referenceId: sale.id,
-        });
-      }
+          createdAt: now,
+        })),
+      );
 
-      // Section 5, rule 1. Never read-then-write. The conditional UPDATE takes
-      // a row lock and re-evaluates `quantity_on_hand >= n` after acquiring it,
-      // so a racing sale that got there first turns this into zero rows
-      // affected — which is the correct stockout signal under READ COMMITTED.
       const unitsPerProduct = new Map<string, number>();
       for (const line of priced.lines) {
         unitsPerProduct.set(
@@ -277,7 +361,18 @@ export async function recordSale(
         );
       }
 
-      for (const [productId, units] of unitsPerProduct) {
+      // Section 5, rule 1. Never read-then-write. The conditional UPDATE takes
+      // a row lock and re-evaluates `quantity_on_hand >= n` after acquiring it,
+      // so a racing sale that got there first turns this into zero rows
+      // affected — which is the correct stockout signal under READ COMMITTED.
+      //
+      // Products are locked in id order, never basket order. Basket order lets
+      // a sale of [A, B] and a concurrent sale of [B, A] each hold one lock and
+      // wait for the other; Postgres breaks the cycle by killing one of them
+      // (40P01) and a valid sale fails. One global order makes a cycle
+      // impossible. Test 3b in services.test.ts reproduces the deadlock.
+      for (const productId of [...unitsPerProduct.keys()].sort(byId)) {
+        const units = unitsPerProduct.get(productId)!;
         const decremented = await tx
           .update(products)
           .set({ quantityOnHand: sql`${products.quantityOnHand} - ${units}::integer` })
@@ -294,7 +389,8 @@ export async function recordSale(
           // Rolls back everything above: the sale, its lines, its movements.
           throw new ServiceError(
             "insufficient_stock",
-            `insufficient stock for product ${productId}: needed ${units}`,
+            `not enough ${owned.get(productId)!.name} in stock: needed ${units}`,
+            { productId },
           );
         }
       }
@@ -394,4 +490,86 @@ export async function reconcileStock(userId: string) {
     HAVING p.quantity_on_hand <> COALESCE(SUM(m.quantity), 0)
   `);
   return rows.rows;
+}
+
+// ---------------------------------------------------------------------------
+// Configuration: products and promotions. These never move stock — quantity
+// and average cost are not in either schema — which is why they need no ledger
+// entry and no transaction.
+// ---------------------------------------------------------------------------
+
+const uuid = z.uuid();
+
+export async function createProduct(userId: string, rawInput: unknown) {
+  const input = productInputSchema.parse(rawInput);
+  try {
+    const [row] = await db
+      .insert(products)
+      .values({ ...input, userId })
+      .returning();
+    return row;
+  } catch (e) {
+    if (isUniqueViolation(e, "products_user_sku_key")) {
+      throw new ServiceError("conflict", `a product with SKU ${input.sku} already exists`);
+    }
+    throw e;
+  }
+}
+
+/**
+ * Name, SKU, category, price, reorder point, lead time, and active status.
+ * Deactivating is the delete: `is_active = false`, never a DELETE, because
+ * sale lines and movements reference the product forever.
+ */
+export async function updateProduct(
+  userId: string,
+  productId: string,
+  rawInput: unknown,
+) {
+  const id = uuid.parse(productId);
+  const patch = productUpdateSchema.parse(rawInput);
+  if (Object.keys(patch).length === 0) {
+    throw new ServiceError("invalid_input", "nothing to update");
+  }
+  try {
+    const [row] = await db
+      .update(products)
+      .set(patch)
+      .where(and(eq(products.id, id), eq(products.userId, userId)))
+      .returning();
+    if (!row) throw new ServiceError("not_found", "no such product for this account");
+    return row;
+  } catch (e) {
+    if (isUniqueViolation(e, "products_user_sku_key")) {
+      throw new ServiceError("conflict", "a product with that SKU already exists");
+    }
+    throw e;
+  }
+}
+
+export async function createPromotion(userId: string, rawInput: unknown) {
+  const input = promotionInputSchema.parse(rawInput);
+  await loadOwnedProducts(db, userId, [input.productId]);
+  const [row] = await db
+    .insert(promotions)
+    .values({ ...input, userId })
+    .returning();
+  return row;
+}
+
+/** Ending a promotion deactivates its row; the product's own price is never edited. */
+export async function setPromotionActive(
+  userId: string,
+  promotionId: string,
+  rawInput: unknown,
+) {
+  const id = uuid.parse(promotionId);
+  const { isActive } = promotionActiveSchema.parse(rawInput);
+  const [row] = await db
+    .update(promotions)
+    .set({ isActive })
+    .where(and(eq(promotions.id, id), eq(promotions.userId, userId)))
+    .returning();
+  if (!row) throw new ServiceError("not_found", "no such promotion for this account");
+  return row;
 }

@@ -43,15 +43,22 @@ export const productInputSchema = createInsertSchema(products, {
   quantityOnHand: true,
 });
 
+/** Every product field is optional on update; quantity and average cost stay excluded. */
+export const productUpdateSchema = productInputSchema.partial();
+
 export const supplierInputSchema = createInsertSchema(suppliers, {
   name: (s) => s.trim().min(1, "name is required"),
 }).omit(SERVER_OWNED);
 
 export const promotionInputSchema = createInsertSchema(promotions, {
+  productId: () => z.uuid(),
   percent: (s) => s.int().min(1).max(100),
   buyQty: (s) => s.int().positive(),
   getQty: (s) => s.int().positive(),
   priority: (s) => s.int(),
+  // JSON has no date type; forms and tools send ISO strings.
+  startsAt: () => z.coerce.date(),
+  endsAt: () => z.coerce.date(),
 })
   .omit({ id: true, userId: true })
   // Mirrors promotions_shape_check in the database. The constraint is the real
@@ -66,6 +73,8 @@ export const promotionInputSchema = createInsertSchema(promotions, {
   .refine((p) => p.endsAt > p.startsAt, {
     message: "ends_at must be after starts_at",
   });
+
+export const promotionActiveSchema = z.object({ isActive: z.boolean() });
 
 /**
  * A receipt line as the caller supplies it. Derived from the table, then
@@ -82,6 +91,9 @@ const receiptLineInputSchema = createInsertSchema(receiptLines, {
 
 export const receiveGoodsInputSchema = z.object({
   supplierId: z.uuid().optional(),
+  // The receiving screen types a supplier name; the service finds or creates
+  // the supplier row. Ignored when supplierId is given.
+  supplierName: z.string().trim().min(1).max(200).optional(),
   reference: z.string().trim().max(200).optional(),
   receivedAt: z.coerce.date().optional(),
   source: z.enum(["manual", "upload"]).default("manual"),
@@ -93,6 +105,10 @@ export const recordSaleInputSchema = z.object({
   // submission carries the same key and collides with sales_user_idempotency_key.
   idempotencyKey: z.string().trim().min(1).max(200),
   saleDiscount: z.number().int().min(0).default(0),
+  // Section 5, rule 2: the total the client showed. When present and the
+  // server's own pricing disagrees, the sale is refused with price_changed and
+  // nothing is written.
+  expectedTotal: z.number().int().min(0).optional(),
   lines: z
     .array(
       z.object({

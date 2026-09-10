@@ -30,7 +30,12 @@ const globalForDb = globalThis as unknown as { pool?: Pool };
 
 export const pool =
   globalForDb.pool ??
-  new Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
+  new Pool({
+    connectionString: process.env.DATABASE_URL,
+    // 10 for the app. The seed raises it (scripts/env.ts --pool) because it
+    // replays thousands of sales and is bound by round-trip latency.
+    max: Number(process.env.PG_POOL_MAX ?? 10),
+  });
 
 if (process.env.NODE_ENV !== "production") globalForDb.pool = pool;
 

@@ -255,6 +255,78 @@ test("3. two genuinely concurrent sales for the last unit: exactly one wins", as
   assert.equal(saleMoves.length, 1, "only the winning sale left movements behind");
 });
 
+test("3b. concurrent sales locking two products in opposite orders both succeed (no deadlock)", async () => {
+  // Sale X is [A, B], sale Y is [B, A]. If each takes row locks in basket order,
+  // X holds A and waits for B while Y holds B and waits for A: Postgres detects
+  // the cycle and kills one with 40P01, and a perfectly valid sale fails. Locks
+  // must be taken in one global order. Plenty of stock, so a failure here can
+  // only be a locking failure, never a stockout.
+  const userId = await newUser("t3b");
+  const a = await newProduct(userId);
+  const b = await newProduct(userId);
+  await receiveGoods(userId, {
+    lines: [
+      { productId: a.id, quantity: 50, unitCost: 8000 },
+      { productId: b.id, quantity: 50, unitCost: 8000 },
+    ],
+  });
+
+  const results = await Promise.allSettled(
+    Array.from({ length: 6 }, (_, i) =>
+      recordSale(userId, {
+        idempotencyKey: `t3b-${i}`,
+        lines:
+          i % 2 === 0
+            ? [{ productId: a.id, quantity: 1 }, { productId: b.id, quantity: 1 }]
+            : [{ productId: b.id, quantity: 1 }, { productId: a.id, quantity: 1 }],
+      }),
+    ),
+  );
+  const failures = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+  assert.deepEqual(
+    failures.map((f) => String((f.reason as { cause?: { code?: string } })?.cause?.code ?? f.reason)),
+    [],
+    "every sale must succeed; a 40P01 here is a lock-ordering deadlock",
+  );
+  assert.equal((await reload(a.id)).quantityOnHand, 44);
+  assert.equal((await reload(b.id)).quantityOnHand, 44);
+});
+
+test("rule 2: a client total the server disagrees with stops the sale and writes nothing", async () => {
+  const userId = await newUser("t3c");
+  const product = await newProduct(userId, { unitPrice: 25000 });
+  await receiveGoods(userId, {
+    lines: [{ productId: product.id, quantity: 5, unitCost: 8000 }],
+  });
+
+  // The screen loaded at 250, then the owner repriced to 300 before checkout.
+  await db.update(products).set({ unitPrice: 30000 }).where(eq(products.id, product.id));
+
+  await assert.rejects(
+    () =>
+      recordSale(userId, {
+        idempotencyKey: "t3c-stale",
+        expectedTotal: 25000,
+        lines: [{ productId: product.id, quantity: 1 }],
+      }),
+    (e: unknown) =>
+      e instanceof ServiceError &&
+      e.code === "price_changed" &&
+      (e.details?.priced as { total: number }).total === 30000,
+    "refused, carrying the server's pricing so the screen can re-display it",
+  );
+  assert.equal((await db.select().from(sales).where(eq(sales.userId, userId))).length, 0);
+  assert.equal((await reload(product.id)).quantityOnHand, 5, "stock untouched");
+
+  // Re-displayed at 300, the cashier confirms, and it goes through.
+  const sale = await recordSale(userId, {
+    idempotencyKey: "t3c-fresh",
+    expectedTotal: 30000,
+    lines: [{ productId: product.id, quantity: 1 }],
+  });
+  assert.equal(sale.total, 30000);
+});
+
 test("4. the same idempotency key twice creates one sale and returns the same id", async () => {
   const userId = await newUser("t4");
   const product = await newProduct(userId);
