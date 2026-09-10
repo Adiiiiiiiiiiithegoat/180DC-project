@@ -139,6 +139,8 @@ export function assistantTools(userId: string) {
       execute: async (input) => {
         const r = await getInventoryStatus(userId, input);
         return forModel({
+          // Said here, not only in the prompt: the model otherwise dates stock like a sales window.
+          asOf: "right now (live stock, not a sales window: give it no date)",
           ...r,
           items: r.items.map((p) => omit(p, "id", "sku", "category", "unitPricePaise", "averageCostPaise")),
         });
