@@ -114,7 +114,8 @@ export default async function DashboardPage() {
         <h2 id="reorder-title" className="text-sm font-semibold">Needs reordering</h2>
         <p className="mb-3 text-xs text-stone-500">
           On hand is at or below the suggested reorder point: mean daily sales over the last{" "}
-          {reorder.method.trailingDays} days × lead time + {reorder.method.k} × standard deviation.
+          {reorder.method.trailingDays} days × lead time + {reorder.method.k} × standard deviation × √(lead time).
+          k = {reorder.method.k} is roughly a 95% service level.
         </p>
         {attention.length === 0 ? (
           <p className="text-sm text-stone-500">Nothing needs reordering.</p>

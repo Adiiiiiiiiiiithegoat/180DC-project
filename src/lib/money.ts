@@ -1,6 +1,6 @@
 /**
  * DESIGN.md section 5, rule 7: integers in paise throughout, formatted only at
- * display. These two functions are the only places rupees exist as text.
+ * display. formatPaise and formatRupees are the only places rupees exist as text.
  */
 
 /** 12345 -> "₹123.45". Integer arithmetic only. */
@@ -9,6 +9,16 @@ export function formatPaise(paise: number): string {
   const abs = Math.abs(paise);
   const rupees = (abs - (abs % 100)) / 100;
   return `${sign}₹${rupees.toLocaleString("en-IN")}.${String(abs % 100).padStart(2, "0")}`;
+}
+
+/**
+ * 1234550 -> "₹12,346": whole rupees, half away from zero. Only for the
+ * assistant's per-row figures, where paise cost tokens and say nothing.
+ */
+export function formatRupees(paise: number): string {
+  const abs = Math.abs(paise) + 50;
+  const rupees = (abs - (abs % 100)) / 100;
+  return `${paise < 0 && rupees > 0 ? "-" : ""}₹${rupees.toLocaleString("en-IN")}`;
 }
 
 /**

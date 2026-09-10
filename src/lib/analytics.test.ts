@@ -232,6 +232,41 @@ test("getReorderSuggestions: Protein Bar has 5 days of history and gets no numbe
   for (const sku of ["STN-PEN-10", "STP-RICE-1K", "HH-DISH-500"]) {
     assert.equal(products.find((p) => p.sku === sku)!.status, "reorder_now", sku);
   }
+
+  // The buffer scales with √(lead time). Recomputed here from the returned
+  // (2dp-rounded) inputs, so allow the rounding to move the ceiling by one;
+  // the old k x std dev buffer is several units short for a 7-day lead time.
+  for (const p of products) {
+    if (!p.inputs) continue;
+    const { meanDailyUnits: m, stdDevDailyUnits: sd, leadTimeDays: lt } = p.inputs;
+    const expected = Math.ceil(m! * lt + method.k * sd! * Math.sqrt(lt));
+    assert.ok(Math.abs(p.suggestedReorderPoint! - expected) <= 1, `${p.name}: ${p.suggestedReorderPoint} vs ${expected}`);
+  }
+});
+
+test("includeToday: the window ends now, and the previous one is cut at the same time of day", async () => {
+  // Local's last sale is 9 Sep, so at noon on 10 Sep "today so far" is empty
+  // and two days to now is exactly the whole of 9 Sep.
+  const today = await getSalesSummary(u, { days: 1, includeToday: true }, NOW);
+  assert.ok("previousPeriod" in today);
+  assert.deepEqual(today.period, { from: "2026-09-10", to: "2026-09-10", days: 1 });
+  assert.equal(today.revenuePaise, 0);
+  assert.match(today.partial!, /up to 12:00 IST/);
+  assert.deepEqual(today.previousPeriod.period, { from: "2026-09-09", to: "2026-09-09" });
+
+  // Oracle: yesterday until noon, by independent SQL.
+  const [{ revenue }] = (await db.execute<{ revenue: number }>(sql`
+    SELECT COALESCE(SUM(total), 0)::bigint AS revenue FROM sales
+     WHERE user_id = ${u} AND sold_at >= '2026-09-09T00:00:00+05:30' AND sold_at < '2026-09-09T12:00:00+05:30'`)).rows;
+  assert.equal(today.previousPeriod.revenuePaise, revenue);
+
+  const twoDays = await getSalesSummary(u, { days: 2, includeToday: true }, NOW);
+  const ninth = await getSalesSummary(u, { days: 1, endDate: "2026-09-09" }, NOW);
+  assert.equal(twoDays.revenuePaise, ninth.revenuePaise);
+
+  // The complete-days default is untouched by all this.
+  assert.equal((await getSalesSummary(u, { days: 30 }, NOW)).revenuePaise, 31415900);
+  assert.equal((await getSalesSummary(u, { days: 30 }, NOW)).partial, undefined);
 });
 
 test("getStockHistory: the ledger's last closing balance is what is on the shelf", async () => {

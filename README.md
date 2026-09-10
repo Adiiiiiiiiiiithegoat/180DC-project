@@ -12,6 +12,21 @@ verification that gated it.
 
 ## Design notes
 
+### Reorder methodology
+
+```
+suggested reorder point = ceil(mean daily sales × L + k × σ × √L)
+```
+
+Mean and standard deviation σ of daily units sold over the trailing 30
+complete days; L is the product's lead time in days. The buffer grows with √L
+because demand over L days has L times the variance of one day's demand.
+k = 1.65 is approximately a 95% service level (the one-sided 95% point of a
+normal distribution) — approximately, because daily sales are neither normal
+nor independent. Under 14 days on the shelf, counted from the first stock
+movement, returns "insufficient history" rather than a number. Full reasoning
+in `DESIGN.md` section 8.
+
 ### A product with sales history cannot be deleted
 
 `sale_lines.product_id` and `receipt_lines.product_id` reference `products(id)`

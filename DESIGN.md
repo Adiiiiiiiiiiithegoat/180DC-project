@@ -413,10 +413,10 @@ watch it be structurally unable to.
 |---|---|---|
 | `findProduct(query)` | Candidates with SKU, stock, price | Resolves "blue mugs" to an ID. Runs first almost every time; ambiguity means it asks rather than guesses. |
 | `getInventoryStatus(filter?)` | Stock levels, reorder points, stock value | "What am I running low on?" Covers inventory levels and health. |
-| `getSalesSummary(period, comparePeriod?)` | Revenue, units, transactions, cost of goods, gross margin, and the delta | "How did last week go, and is that better?" The comparison is computed in SQL so the model never does arithmetic. |
+| `getSalesSummary(period, comparePeriod?, includeToday?)` | Revenue, units, transactions, cost of goods, gross margin, and the delta | "How did last week go, and is that better?" The comparison is computed in SQL so the model never does arithmetic. |
 | `getSalesTimeSeries(period, granularity)` | Revenue and units per day or week | Feeds the dashboard chart. Chart and assistant share it, so they cannot disagree. |
-| `getProductPerformance(period)` | Per-product revenue, units, margin, velocity vs that product's prior period, **including zero-sale products** | "What's selling, what's dead?" Covers fast/slow movers, and dead stock falls out of it without a separate tool. |
-| `getReorderSuggestions()` | Suggested quantity, projected days to stockout, **and the inputs** | Covers the reorder bullet. Returning the method with the number is what lets the model explain rather than assert. |
+| `getProductPerformance(period, includeToday?)` | Per-product revenue, units, margin, velocity vs that product's prior period, **including zero-sale products** | "What's selling, what's dead?" Covers fast/slow movers, and dead stock falls out of it without a separate tool. |
+| `getReorderSuggestions(include?)` | Suggested quantity, projected days to stockout, **and the inputs** | Covers the reorder bullet. Returning the method with the number is what lets the model explain rather than assert. |
 | `getStockHistory(productId, period)` | The movement ledger with reasons | "Why do I only have three left?" Exists only because stock is a ledger. |
 | `updateProductSettings(id, {...})` — **write, needs approval** | Confirmation | Reorder point, price, active status. Never quantity. Natural flow: assistant spots repeated stockouts, proposes raising the reorder point, asks before applying. |
 
@@ -426,13 +426,44 @@ produces a figure itself.
 Write approval uses AI SDK 6 human-in-the-loop tool approval — the invocation
 pauses, the UI prompts, `addToolApprovalResponse` releases it.
 
+**What the model is sent is trimmed, not what is computed.** Groq's free tier
+allows 8,000 tokens a minute and one multi-step question resends the whole
+conversation on every step, so tool results are cut down on their way to the
+model only: ids and SKUs dropped except where the next call needs them
+(`findProduct`), fields duplicated elsewhere in the result dropped,
+`getProductPerformance` capped at 10 rows unless asked, and
+`getReorderSuggestions` returning only products that need attention unless
+asked for all. Money inside rows is rounded to whole rupees; shop-wide totals
+keep their paise, so the figure the assistant quotes is identical to the
+dashboard's, and per-unit prices stay exact. The dashboard and the database
+see the functions' full output.
+
 ### Reorder methodology
 
 Stated plainly, never claimed optimal:
 
-- mean daily sales over the trailing 30 days
-- × `lead_time_days`
-- + buffer of k × standard deviation of daily sales
+```
+reorder point = mean daily sales × L  +  k × σ × √L
+```
+
+- mean daily sales and σ (their standard deviation) over the trailing 30
+  complete days, days with no sales counted as zero
+- L = `lead_time_days`
+
+**The buffer scales with √L.** Demand over L days is the sum of L daily
+demands, so its variance is L times a single day's and its standard deviation
+√L times. A buffer of k × σ covers one day's variability and understates the
+risk for any lead time beyond a day.
+
+**k = 1.65 is approximately a 95% service level** — the one-sided 95% point of
+a normal distribution, so the buffer covers demand over the lead time about
+95% of the time. Approximately, because daily sales are neither normal nor
+independent; the tool, the dashboard and the assistant all say "roughly 95%",
+never a guarantee.
+
+History is counted from a product's first stock movement — the day it went on
+the shelf — not its first sale, so a product that sat unsold for two months has
+two months of (zero) history.
 
 **Fewer than 14 days of sales history returns "insufficient history" instead of
 a number.** A standard deviation over four days is noise, and declining to
@@ -460,6 +491,14 @@ and last weeks are partial and would plot as false dips; the same goes for the
 week in progress on a live account. This is a Phase 6 requirement, built into
 `getSalesTimeSeries` itself, so the chart and the assistant both inherit it —
 not a Phase 7 chart fix.
+
+**Today, only when asked.** A shop owner asking how today is going is the most
+natural question there is, so it must not be unanswerable. `getSalesSummary`
+and `getProductPerformance` take `includeToday`: the window then ends now, the
+previous window ends at the same time of day, so a partial day is compared with
+the same part of a day, and the result carries a `partial` label the assistant
+must repeat. The system prompt allows it only for questions about today.
+Charts and period comparisons never use it.
 
 The check: for every chart and every README claim, one tool call should produce
 that number. If the answer is "two calls and some arithmetic", the tool is

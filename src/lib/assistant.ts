@@ -37,7 +37,7 @@ import {
   getStockHistory,
 } from "./analytics";
 import { backoffMiddleware, type Busy } from "./backoff";
-import { formatPaise } from "./money";
+import { formatPaise, formatRupees } from "./money";
 import { updateProductSettings } from "./services";
 import {
   findProductInputSchema,
@@ -64,16 +64,25 @@ const dayMonthYear = new Intl.DateTimeFormat("en-GB", {
   year: "numeric",
 });
 
+// Per-unit rates stay exact even in rows: "₹12.50" rounded to "₹13" would misstate a price.
+const EXACT_IN_ROWS = /^(unitPrice|averageCost)Paise$/;
+
 /**
+ * The model-facing serialisation. Only what the model reads changes here;
+ * the dashboard and the database keep the functions' full output.
+ *
  * Money leaves SQL as integer paise, in fields named `...Paise`. The model
  * gets those formatted as rupees under the name without the suffix, so it
- * quotes "₹3,14,159.00" rather than dividing 31415900 by 100 itself. Dates
- * go the same way, "2026-08-11" to "11 Aug 2026", because an open model will
- * happily read the ISO form as 8 November. Nulls are dropped: an absent field
- * reads as "none" and costs no tokens.
+ * quotes "₹3,14,159.00" rather than dividing 31415900 by 100 itself. Figures
+ * inside rows (per product, per week) are rounded to whole rupees: paise cost
+ * tokens and say nothing there. Top-level totals keep their paise, so the
+ * shop-wide figures the assistant quotes are identical to the dashboard's.
+ * Dates go "2026-08-11" to "11 Aug 2026", because an open model will happily
+ * read the ISO form as 8 November. Nulls are dropped: an absent field reads
+ * as "none" and costs no tokens.
  */
-export function forModel(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(forModel);
+export function forModel(value: unknown, inRow = false): unknown {
+  if (Array.isArray(value)) return value.map((v) => forModel(v, true));
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return dayMonthYear.format(new Date(`${value}T00:00:00Z`));
   }
@@ -82,10 +91,22 @@ export function forModel(value: unknown): unknown {
     Object.entries(value)
       .filter(([, v]) => v !== null && v !== undefined)
       .map(([k, v]) =>
-        k.endsWith("Paise") && typeof v === "number" ? [k.slice(0, -5), formatPaise(v)] : [k, forModel(v)],
+        k.endsWith("Paise") && typeof v === "number"
+          ? [k.slice(0, -5), inRow && !EXACT_IN_ROWS.test(k) ? formatRupees(v) : formatPaise(v)]
+          : [k, forModel(v, inRow)],
       ),
   );
 }
+
+/** `o` without `keys`: fields the model never uses stay out of its context window. */
+function omit<T extends object, K extends keyof T>(o: T, ...keys: K[]): Omit<T, K> {
+  const copy = { ...o };
+  for (const k of keys) delete copy[k];
+  return copy;
+}
+
+/** The assistant's default for getProductPerformance when the model gives no limit. */
+const PERFORMANCE_LIMIT = 10;
 
 /** The eight tools, bound to one account. `userId` is captured here and nowhere else. */
 export function assistantTools(userId: string) {
@@ -99,7 +120,10 @@ export function assistantTools(userId: string) {
         "user which they mean instead of guessing. Do not use it to list products or find low stock " +
         "(use getInventoryStatus) or for sales figures (use getProductPerformance).",
       inputSchema: findProductInputSchema,
-      execute: async (input) => forModel(await findProduct(userId, input)),
+      execute: async (input) => {
+        const r = await findProduct(userId, input);
+        return forModel({ ...r, candidates: r.candidates.map((c) => omit(c, "category")) });
+      },
     }),
 
     getInventoryStatus: tool({
@@ -112,7 +136,13 @@ export function assistantTools(userId: string) {
         "about sales: for how fast things sell, when they will run out, or how much to order, use " +
         "getReorderSuggestions.",
       inputSchema: inventoryStatusInputSchema,
-      execute: async (input) => forModel(await getInventoryStatus(userId, input)),
+      execute: async (input) => {
+        const r = await getInventoryStatus(userId, input);
+        return forModel({
+          ...r,
+          items: r.items.map((p) => omit(p, "id", "sku", "category", "unitPricePaise", "averageCostPaise")),
+        });
+      },
     }),
 
     getSalesSummary: tool({
@@ -126,7 +156,7 @@ export function assistantTools(userId: string) {
         "complete until you have also called getProductPerformance with the same days and endDate " +
         "(sortBy biggest_decline if revenue fell, biggest_growth if it rose; limit 5) and named the " +
         "products, and any promotions, behind the change. Windows end yesterday, the last complete " +
-        "day; today's trading is not included.",
+        "day; today's trading is included only with includeToday, for questions about today.",
       inputSchema: salesSummaryInputSchema,
       execute: async (input) => forModel(await getSalesSummary(userId, input)),
     }),
@@ -140,7 +170,10 @@ export function assistantTools(userId: string) {
         "partial weeks. For one total over a period use getSalesSummary instead; for products use " +
         "getProductPerformance.",
       inputSchema: salesTimeSeriesInputSchema,
-      execute: async (input) => forModel(await getSalesTimeSeries(userId, input)),
+      execute: async (input) => {
+        const r = await getSalesTimeSeries(userId, input);
+        return forModel({ ...r, points: r.points.map((p) => omit(p, "end")) });
+      },
     }),
 
     getProductPerformance: tool({
@@ -153,23 +186,45 @@ export function assistantTools(userId: string) {
         "Includes products that sold nothing, so it also answers what's not selling / dead " +
         "stock. Use for: best and worst sellers, fast and slow movers, what's growing or declining, " +
         "how a promotion is doing, and to explain a change seen in getSalesSummary (same days and " +
-        "endDate; sortBy biggest_decline or biggest_growth, with a limit of about 5).",
+        "endDate; sortBy biggest_decline or biggest_growth, with a limit of about 5). Returns the first " +
+        `${PERFORMANCE_LIMIT} products unless limit says otherwise.`,
       inputSchema: productPerformanceInputSchema,
-      execute: async (input) => forModel(await getProductPerformance(userId, input)),
+      execute: async (input) => {
+        const r = await getProductPerformance(userId, { ...input, limit: input.limit ?? PERFORMANCE_LIMIT });
+        return forModel({
+          ...r,
+          // Promotions, free units and discounts are in promotionsAndDiscounts already.
+          products: r.products.map((p) =>
+            omit(p, "id", "isActive", "previousUnits", "previousUnitsPerDay", "freeUnits", "discountsGivenPaise", "livePromotion"),
+          ),
+        });
+      },
     }),
 
     getReorderSuggestions: tool({
       description:
-        "Reorder advice for every active product, with the inputs behind each number: mean and " +
-        "standard deviation of daily units sold over the trailing 30 days, lead time, the buffer " +
-        "factor k, days of history, stock on hand. Suggested reorder point = mean x lead time + k x " +
-        "standard deviation, rounded up; suggested order quantity = what it takes to get back to that " +
-        "point; days to stockout = on hand / mean. A product with under 14 days of history has " +
-        "status insufficient_history and no numbers: say that plainly, never estimate one. Use for: " +
-        "what should I reorder, how much should I order, when will X run out, and before proposing " +
-        "a new reorder point. Explain the method from the inputs when you give a number.",
+        "Reorder advice per active product, with the inputs behind each number: mean and standard " +
+        "deviation of daily units sold over the trailing 30 days, lead time, stock on hand. Suggested " +
+        "reorder point = mean x lead time + k x standard deviation x √(lead time), rounded up, with " +
+        "k = 1.65, approximately a 95% service level; suggested order quantity = what it takes to get " +
+        "back to that point; days to stockout = on hand / mean. A product with under 14 days of " +
+        "history has status insufficient_history and no numbers: say that plainly, never estimate " +
+        "one. Use for: what should I reorder, how much should I order, when will X run out, and " +
+        "before proposing a new reorder point. Explain the method from the inputs when you give a number.",
       inputSchema: reorderSuggestionsInputSchema,
-      execute: async () => forModel(await getReorderSuggestions(userId)),
+      execute: async ({ include }) => {
+        const r = await getReorderSuggestions(userId);
+        const shown = include === "all" ? r.products : r.products.filter((p) => p.status !== "ok");
+        return forModel({
+          method: r.method,
+          ...(include === "attention" && { otherProductsOk: r.products.length - shown.length }),
+          products: shown.map((p) =>
+            p.inputs
+              ? { ...omit(p, "id", "sku"), inputs: omit(p.inputs, "unitsSoldInWindow", "historyDays") }
+              : omit(p, "id", "sku", "historyDays"),
+          ),
+        });
+      },
     }),
 
     getStockHistory: tool({
@@ -180,7 +235,15 @@ export function assistantTools(userId: string) {
         "there adjustments. Needs the product id from findProduct. Not for sales totals or trends " +
         "(use getProductPerformance or getSalesTimeSeries).",
       inputSchema: stockHistoryInputSchema,
-      execute: async (input) => forModel(await getStockHistory(userId, input)),
+      execute: async (input) => {
+        const r = await getStockHistory(userId, input);
+        return forModel({
+          ...r,
+          product: omit(r.product, "id"),
+          // Most days only sell: a zero received / returned / adjusted is noise.
+          days: r.days.map((d) => Object.fromEntries(Object.entries(d).filter(([k, v]) => k === "closing" || v !== 0))),
+        });
+      },
     }),
 
     updateProductSettings: tool({
@@ -222,6 +285,9 @@ function instructions(now: Date) {
 Rules:
 - Every figure you state must come from a tool result in this conversation, quoted exactly as returned, including its ₹ formatting. Never add, subtract, multiply, average, convert or estimate figures yourself. If a figure you need was not returned, call the tool that returns it, or say you don't have it.
 - Sales windows are whole days ending yesterday. Say which dates a figure covers.
+- Except when asked about today ("how's today going?"): call getSalesSummary with days 1 and includeToday true (and getProductPerformance with includeToday true if asked what is selling). Say the figures are partial, "so far today, up to" the time the tool gives, compared with yesterday up to the same time. Never use includeToday otherwise.
+- Stock on hand is live, as of right now; never put a date on it.
+- When you give a reorder number, explain it from the method and inputs the tool returns: expected demand over the lead time plus a buffer that grows with the square root of the lead time, with k = 1.65 giving roughly a 95% service level.
 - When asked how a period went, don't stop at the totals: find out which products (and promotions) drove the change with getProductPerformance, then explain it.
 - To act on a product the user names, call findProduct first for its id. If several products match, ask which one.
 - You may change a reorder point, a price or whether a product is active, only through updateProductSettings, which the user must approve on screen. You cannot change stock quantities; stock moves only when a person receives goods, sells, or counts stock.

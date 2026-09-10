@@ -175,6 +175,10 @@ const days = (fallback: number) =>
 const endDate = z.iso.date().optional()
   .describe("Last day of the window, YYYY-MM-DD, inclusive. Omit to end yesterday, the last complete day.");
 
+// The one way today's unfinished trading gets in, and only when asked for.
+const includeToday = z.boolean().default(false)
+  .describe("Only for questions about today: the window ends now, not yesterday. PARTIAL figures.");
+
 export const findProductInputSchema = z.object({
   query: z.string().trim().min(1).max(100)
     .describe("A product name, part of one, or a SKU, as it was asked for, e.g. \"pens\" or \"STN-PEN-10\"."),
@@ -188,6 +192,7 @@ export const inventoryStatusInputSchema = z.object({
 export const salesSummaryInputSchema = z.object({
   days: days(30),
   endDate,
+  includeToday,
   compareToPrevious: z.boolean().default(true)
     .describe("Also return the same-length window immediately before, and the change. Default true."),
 });
@@ -201,13 +206,19 @@ export const salesTimeSeriesInputSchema = z.object({
 export const productPerformanceInputSchema = z.object({
   days: days(30),
   endDate,
+  includeToday,
   sortBy: z.enum(["revenue", "units", "biggest_decline", "biggest_growth"]).default("revenue")
     .describe("biggest_decline / biggest_growth sort by revenue change against the previous window."),
   limit: z.number().int().min(1).max(50).optional()
-    .describe("Return only the first N products after sorting. Omit for all."),
+    .describe("Return only the first N products after sorting. The assistant's default is 10; pass 50 for " +
+      "every product, e.g. to find what isn't selling."),
 });
 
-export const reorderSuggestionsInputSchema = z.object({});
+export const reorderSuggestionsInputSchema = z.object({
+  include: z.enum(["attention", "all"]).default("attention")
+    .describe("attention: only products to reorder now or without enough history (the default). " +
+      "all: every active product, for a question about one particular product."),
+});
 
 export const stockHistoryInputSchema = z.object({
   productId: z.uuid().describe("The product's id, from findProduct."),

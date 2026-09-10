@@ -14,7 +14,9 @@
  *     reads the clock itself.
  *   - Days are IST calendar days. Sales windows are made of COMPLETE days, so
  *     they end yesterday at the latest: today is still trading, and a partial
- *     day compared with a whole one is a false dip (section 9).
+ *     day compared with a whole one is a false dip (section 9). The exception
+ *     is `includeToday`, for questions about today, which is labelled partial
+ *     and compared like for like (see windowCte). Charts never use it.
  *   - Money is integer paise, and every money field's name ends in `Paise`.
  *     The assistant formats those fields into rupees before the model sees
  *     them (see assistant.ts), so the model never divides by 100 either.
@@ -48,17 +50,38 @@ const pctOf = (a: SQL, b: SQL) => sql`ROUND((${a}) * 100.0 / NULLIF(${b}, 0), 1)
 const pctChange = (cur: SQL, prev: SQL) => pctOf(sql`${cur} - ${prev}`, prev);
 
 /**
- * One row: the window's first and last day and its length. It ends on
- * `endDate` or yesterday, whichever is earlier, so a window never includes
- * today's unfinished trading.
+ * One row: the window's first and last day, its length, and the instants that
+ * bound it and the equal window before it (`cur_from`..`cur_to`,
+ * `prev_from`..`prev_to`).
+ *
+ * By default it ends on `endDate` or yesterday, whichever is earlier, so a
+ * window never includes today's unfinished trading. `includeToday` is the one
+ * exception, for when someone asks about today: the window then ends now, and
+ * the previous window ends at the same time of day `days` days earlier, so a
+ * partial day is compared with the same part of a day, never with a whole one.
  */
-function windowCte(days: number, endDate: string | undefined, now: Date) {
+function windowCte(days: number, endDate: string | undefined, now: Date, includeToday = false) {
+  const at = sql`${now.toISOString()}::timestamptz`;
+  const toDay = includeToday
+    ? todayIst(now)
+    : sql`LEAST(COALESCE(${endDate ?? null}::date, ${todayIst(now)} - 1), ${todayIst(now)} - 1)`;
   return sql`win AS (
-    SELECT e.to_day - ${days - 1}::int AS from_day, e.to_day, ${days}::int AS days
-      FROM (SELECT LEAST(COALESCE(${endDate ?? null}::date, ${todayIst(now)} - 1),
-                         ${todayIst(now)} - 1) AS to_day) e
+    SELECT e.from_day, e.to_day, ${days}::int AS days,
+           ${startOf(sql`e.from_day`)} AS cur_from,
+           ${includeToday ? at : startOf(sql`e.to_day + 1`)} AS cur_to,
+           ${startOf(sql`e.from_day - ${days}::int`)} AS prev_from,
+           ${includeToday ? sql`${at} - make_interval(days => ${days}::int)` : startOf(sql`e.from_day`)} AS prev_to
+      FROM (SELECT d.to_day - ${days - 1}::int AS from_day, d.to_day FROM (SELECT ${toDay} AS to_day) d) e
   )`;
 }
+
+/** Sales in the window or the one before it; `cur` says which. */
+const inWindows = (soldAt: SQL) =>
+  sql`${soldAt} >= win.prev_from AND ${soldAt} < win.cur_to AND (${soldAt} < win.prev_to OR ${soldAt} >= win.cur_from)`;
+
+/** For a partial window, what the model is told: which part of which days it covers. */
+const partialNote = (upTo: string) =>
+  `PARTIAL: includes today's trading up to ${upTo} IST; the previous period is cut at the same time of day`;
 
 type Row = Record<string, unknown>;
 const rows = async <T extends Row>(query: SQL) => (await db.execute<T>(query)).rows;
@@ -169,15 +192,14 @@ export async function getInventoryStatus(userId: string, rawInput: unknown = {})
 export async function getSalesSummary(userId: string, rawInput: unknown = {}, now = new Date()) {
   const input = salesSummaryInputSchema.parse(rawInput);
   const [r] = await rows<Row & Record<string, number | string | null>>(sql`
-    WITH ${windowCte(input.days, input.endDate, now)},
+    WITH ${windowCte(input.days, input.endDate, now, input.includeToday)},
     s AS (
       SELECT sa.total, sa.cost_total, sa.discount_total,
-             (sa.sold_at AT TIME ZONE ${TZ})::date >= win.from_day AS cur,
+             sa.sold_at >= win.cur_from AS cur,
              (SELECT SUM(l.quantity) FROM sale_lines l WHERE l.sale_id = sa.id) AS units
         FROM sales sa, win
        WHERE sa.user_id = ${userId}
-         AND sa.sold_at >= ${startOf(sql`win.from_day - win.days`)}
-         AND sa.sold_at <  ${startOf(sql`win.to_day + 1`)}
+         AND ${inWindows(sql`sa.sold_at`)}
     ),
     t AS (
       SELECT COALESCE(SUM(total)          FILTER (WHERE cur), 0)::bigint AS revenue,
@@ -201,7 +223,9 @@ export async function getSalesSummary(userId: string, rawInput: unknown = {}, no
         FROM t
     )
     SELECT win.from_day::text AS from_day, win.to_day::text AS to_day, win.days,
-           (win.from_day - win.days)::text AS p_from_day, (win.from_day - 1)::text AS p_to_day,
+           (win.from_day - win.days)::text AS p_from_day,
+           ((win.prev_to - interval '1 microsecond') AT TIME ZONE ${TZ})::date::text AS p_to_day,
+           to_char(win.cur_to AT TIME ZONE ${TZ}, 'HH24:MI') AS up_to,
            m.*,
            m.revenue - m.p_revenue           AS revenue_change,
            m.margin - m.p_margin             AS margin_change,
@@ -230,6 +254,7 @@ export async function getSalesSummary(userId: string, rawInput: unknown = {}, no
   });
 
   const current = {
+    ...(input.includeToday && { partial: partialNote(r.up_to as string) }),
     period: { from: r.from_day as string, to: r.to_day as string, days: r.days as number },
     ...totals(""),
   };
@@ -335,12 +360,12 @@ export async function getProductPerformance(userId: string, rawInput: unknown = 
     revenue_change: number; revenue_change_pct: number | null; units_change_pct: number | null;
     free_units: number; discounts: number; p_free_units: number; p_discounts: number;
     live_promotion: string | null;
-    from_day: string; to_day: string; p_from_day: string; p_to_day: string;
+    from_day: string; to_day: string; p_from_day: string; p_to_day: string; up_to: string;
   }>(sql`
-    WITH ${windowCte(input.days, input.endDate, now)},
+    WITH ${windowCte(input.days, input.endDate, now, input.includeToday)},
     lines AS (
       SELECT l.product_id,
-             (sa.sold_at AT TIME ZONE ${TZ})::date >= win.from_day AS cur,
+             sa.sold_at >= win.cur_from AS cur,
              l.quantity,
              l.quantity::bigint * l.charged_price - l.discount_amount AS revenue,
              l.quantity::bigint * l.unit_cost AS cost,
@@ -349,8 +374,7 @@ export async function getProductPerformance(userId: string, rawInput: unknown = 
         FROM sale_lines l
         JOIN sales sa ON sa.id = l.sale_id, win
        WHERE sa.user_id = ${userId}
-         AND sa.sold_at >= ${startOf(sql`win.from_day - win.days`)}
-         AND sa.sold_at <  ${startOf(sql`win.to_day + 1`)}
+         AND ${inWindows(sql`sa.sold_at`)}
     ),
     a AS (
       SELECT product_id,
@@ -394,12 +418,15 @@ export async function getProductPerformance(userId: string, rawInput: unknown = 
                AND pr.ends_at   >  ${now.toISOString()}::timestamptz
              ORDER BY pr.priority, pr.id LIMIT 1) AS live_promotion,
            win.from_day::text AS from_day, win.to_day::text AS to_day,
-           (win.from_day - win.days)::text AS p_from_day, (win.from_day - 1)::text AS p_to_day
+           (win.from_day - win.days)::text AS p_from_day,
+           ((win.prev_to - interval '1 microsecond') AT TIME ZONE ${TZ})::date::text AS p_to_day,
+           to_char(win.cur_to AT TIME ZONE ${TZ}, 'HH24:MI') AS up_to
       FROM perf, win
      ORDER BY ${PERFORMANCE_ORDER[input.sortBy]}`);
 
   const first = found[0];
   return {
+    ...(input.includeToday && first && { partial: partialNote(first.up_to) }),
     period: first ? { from: first.from_day, to: first.to_day, days: input.days } : null,
     previousPeriod: first ? { from: first.p_from_day, to: first.p_to_day } : null,
     sortedBy: input.sortBy,
@@ -443,9 +470,10 @@ export async function getProductPerformance(userId: string, rawInput: unknown = 
 const TRAILING_DAYS = 30;
 const MIN_HISTORY_DAYS = 14;
 /**
- * Buffer factor: k standard deviations of daily sales. 1.65 is the one-sided
- * 95% point of a normal distribution; daily sales are neither normal nor
- * independent, which is why this is called a buffer and not a service level.
+ * Buffer factor. 1.65 is the one-sided 95% point of a normal distribution, so
+ * the buffer covers demand over the lead time about 95% of the time: roughly
+ * a 95% service level. Only roughly — daily sales are neither normal nor
+ * independent — so it is stated as approximate, never as a guarantee.
  */
 const K = 1.65;
 
@@ -453,7 +481,13 @@ const K = 1.65;
  * Per active product: mean and standard deviation of daily units sold over the
  * trailing 30 complete days (days with no sales count as zero), then
  *
- *   suggested reorder point = ceil(mean x lead time + k x std dev)
+ *   suggested reorder point = ceil(mean x L + k x std dev x sqrt(L)), L = lead time in days
+ *
+ * The buffer scales with sqrt(L), not L and not 1: demand over L days is the
+ * sum of L daily demands, so its variance is L times a day's and its standard
+ * deviation sqrt(L) times. `k x std dev` alone understates the buffer for any
+ * lead time over a day.
+ *
  *   suggested order quantity = what it takes to get back up to that point
  *   days to stockout         = on hand / mean
  *
@@ -506,7 +540,8 @@ export async function getReorderSuggestions(userId: string, now = new Date()) {
     ),
     r AS (
       SELECT h.*, st.window_days, st.units_sold, st.mean, st.std_dev,
-             CEIL(st.mean * h.lead_time_days + ${K}::numeric * st.std_dev)::int AS suggested_reorder_point
+             CEIL(st.mean * h.lead_time_days
+                  + ${K}::numeric * st.std_dev * SQRT(h.lead_time_days::numeric))::int AS suggested_reorder_point
         FROM h LEFT JOIN stats st ON st.id = h.id
     )
     SELECT id, name, sku, on_hand, reorder_point, lead_time_days, history_days, window_days, units_sold,
@@ -524,9 +559,11 @@ export async function getReorderSuggestions(userId: string, now = new Date()) {
 
   return {
     method: {
-      formula: "suggested reorder point = ceil(mean daily units x lead time days + k x std dev of daily units)",
+      formula: "suggested reorder point = ceil(mean daily units × L + k × std dev of daily units × √L), L = lead time in days",
+      whySqrtL: "demand over L days has L times the variance of one day's, so its std dev is √L times a day's",
       trailingDays: TRAILING_DAYS,
       k: K,
+      kMeans: "approximately a 95% service level (1.65 is the one-sided 95% point of a normal distribution)",
       minimumHistoryDays: MIN_HISTORY_DAYS,
     },
     products: found.map((p) =>

@@ -62,6 +62,7 @@ test("no tool takes SQL, a table or a column: every string input is narrow", asy
     "getInventoryStatus.filter",
     "getProductPerformance.endDate",
     "getProductPerformance.sortBy",
+    "getReorderSuggestions.include",
     "getSalesSummary.endDate",
     "getSalesTimeSeries.endDate",
     "getSalesTimeSeries.granularity",
@@ -94,5 +95,15 @@ test("forModel formats paise and dates, so the model never converts either", () 
   assert.deepEqual(
     forModel({ revenuePaise: 31415900, period: { from: "2026-08-11" }, livePromotion: null, units: 3 }),
     { revenue: "₹3,14,159.00", period: { from: "11 Aug 2026" }, units: 3 },
+  );
+});
+
+test("forModel: totals keep paise (they must match the dashboard), row figures are whole rupees, prices exact", () => {
+  assert.deepEqual(
+    forModel({
+      stockValueAtCostPaise: 8945789,
+      items: [{ revenuePaise: 1234550, unitPricePaise: 1250, inputs: { stockValuePaise: -30 } }],
+    }),
+    { stockValueAtCost: "₹89,457.89", items: [{ revenue: "₹12,346", unitPrice: "₹12.50", inputs: { stockValue: "₹0" } }] },
   );
 });
