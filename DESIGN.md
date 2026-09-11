@@ -152,9 +152,27 @@ Confirming a draft runs the same code path as manual entry.
   box.
 - **Confirm is `receiveGoods(userId, lines, { draftId })`.** The draft row is
   flipped to confirmed in the same `UPDATE … WHERE id AND user_id AND status =
-  'draft'` that checks ownership, so a second confirm, or someone else's, finds
-  nothing. Each line's printed text is stored on the receipt line and upserted
-  into `supplier_aliases` in the same transaction.
+  'draft'` that checks ownership. Two confirms at once: the second waits on the
+  row lock, re-reads the row, matches nothing, and gets 409 "already
+  confirmed" (someone else's draft is 404). Each line's printed text is stored
+  on the receipt line and upserted into `supplier_aliases` in the same
+  transaction.
+- **The same note twice.** A draft whose supplier and reference match a
+  confirmed receipt gets a warning on the review screen, and confirming it
+  needs `acceptDuplicate` — 409 without, same pattern as the total. Supplier
+  and reference are compared case- and space-insensitively (suppliers resolve
+  case-insensitively everywhere, so "SHARMA TRADERS" off a note and "Sharma
+  Traders" typed by hand are one supplier), and an advisory lock on
+  (user, supplier, reference) makes two drafts of one note confirmed at the
+  same moment take turns. Both a supplier and a reference are needed to call
+  two notes the same.
+- **Aliases** are stored and looked up normalised (trimmed, whitespace
+  collapsed, uppercase), unique on (user, supplier, text) `NULLS NOT DISTINCT`,
+  so a note with no supplier still learns one alias per text.
+- **A reply cut off by the output cap is refused**, even though Groq's JSON mode
+  hands back valid JSON: a 25-line note came back as a tidy 13-line one with no
+  total, which no mismatch check would catch. The upload says how many lines
+  were read and asks for the note in two parts.
 
 **Prompt injection in a document.** A delivery note is attacker-controlled text
 reaching a model. The defence is structural: the extraction call is given no
@@ -253,7 +271,7 @@ historical figure wrong.
 |---|---|---|
 | 1 | Two writers race for the last unit | Never read-then-write. `UPDATE products SET quantity_on_hand = quantity_on_hand - $1 WHERE id = $2 AND user_id = $3 AND quantity_on_hand >= $1`. Zero rows affected → roll back. |
 | 2 | Client and server totals differ | Server prices at commit, inside the transaction. The client total is a preview. A mismatch stops and re-displays. |
-| 3 | Double submission | Idempotency key column on `sales`, unique on `(user_id, idempotency_key)`. A duplicate violates the constraint; catch it and return the existing sale. |
+| 3 | Double submission | Idempotency key column on `sales` and on `receipts`, unique on `(user_id, idempotency_key)`. A duplicate violates the constraint; catch it and return the existing sale or receipt. (An upload draft is protected by its status instead: it can be confirmed once.) |
 | 4 | Cached quantity drifts from ledger | Same transaction, always. Plus a reconciliation check that sums movements and compares — a test and a button. |
 | 5 | Negative stock via another path | `CHECK (quantity_on_hand >= 0)` at the database level. |
 | 6 | History edited | `sales` and `stock_movements` are append-only. |
@@ -535,12 +553,16 @@ function, two surfaces.
 
 ## 9. Dashboard
 
-Four things, no more. All computed in SQL by the same functions the tools use.
+Five things, no more. All computed in SQL by the same functions the tools use.
 
 1. Revenue over time — `getSalesTimeSeries`
 2. Top products by revenue — `getProductPerformance`
 3. Stock value on hand — `getInventoryStatus`
-4. Reorder attention card — `getReorderSuggestions`
+4. Fast and slow movers — `getProductPerformance` sorted `speeding_up` /
+   `slowing_down`: change in units sold against the equal window before.
+   Units, not revenue, so a price change or promotion doesn't read as a
+   product selling faster.
+5. Reorder attention card — `getReorderSuggestions`
 
 **Complete periods only.** Charts and time series drop any bucket the data
 does not fully cover. The seeded history starts and ends mid-week, so its first

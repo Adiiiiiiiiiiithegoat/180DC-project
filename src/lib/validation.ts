@@ -106,6 +106,10 @@ export const receiveGoodsInputSchema = z.object({
   // Confirming an upload whose document total disagrees with its lines needs
   // this said out loud (section 3): a mismatch is never silently accepted.
   acceptTotalMismatch: z.boolean().default(false),
+  // The same for a supplier + reference that has been received before.
+  acceptDuplicate: z.boolean().default(false),
+  // Section 5, rule 3, as for sales: one key per receiving form.
+  idempotencyKey: z.string().trim().min(1).max(200).optional(),
 });
 
 export const recordSaleInputSchema = z.object({
@@ -215,8 +219,9 @@ export const productPerformanceInputSchema = z.object({
   days: days(30),
   endDate,
   includeToday,
-  sortBy: z.enum(["revenue", "units", "biggest_decline", "biggest_growth"]).default("revenue")
-    .describe("biggest_decline / biggest_growth sort by revenue change against the previous window."),
+  sortBy: z.enum(["revenue", "units", "biggest_decline", "biggest_growth", "speeding_up", "slowing_down"]).default("revenue")
+    .describe("biggest_decline / biggest_growth: by revenue change against the previous window. " +
+      "speeding_up / slowing_down: by change in units sold (fast and slow movers)."),
   limit: z.number().int().min(1).max(50).optional()
     .describe("Return only the first N products after sorting. The assistant's default is 10; pass 50 for " +
       "every product, e.g. to find what isn't selling."),

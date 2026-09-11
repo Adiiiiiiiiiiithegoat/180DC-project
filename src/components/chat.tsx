@@ -25,6 +25,8 @@ const TOOL_LABELS: Record<string, string> = {
   getStockHistory: "Read the stock ledger",
 };
 
+const MAX_AUTO_RETRIES = 3;
+
 const SUGGESTIONS = [
   "What's running low?",
   "How did the last 30 days go?",
@@ -54,6 +56,34 @@ export function Chat() {
   useEffect(() => {
     if (!working) setBusy(null);
   }, [working]);
+
+  // When the server gives up waiting (route.ts sends "rate_limited:<seconds>"),
+  // count down Groq's retry-after and ask again ourselves, like an upload does.
+  // A wait of more than two minutes is a daily limit: say so instead.
+  const limitedFor = /^rate_limited:(\d+)$/.exec(error?.message ?? "");
+  const waitSeconds = limitedFor ? Number(limitedFor[1]) : null;
+  const autoRetries = useRef(0);
+  const [retrying, setRetrying] = useState<{ until: number; attempt: number } | null>(null);
+  useEffect(() => {
+    if (waitSeconds === null || waitSeconds > 120 || autoRetries.current >= MAX_AUTO_RETRIES) return;
+    autoRetries.current += 1;
+    setRetrying({ until: Date.now() + waitSeconds * 1000, attempt: autoRetries.current });
+    const t = setTimeout(() => {
+      setRetrying(null);
+      void regenerate();
+    }, waitSeconds * 1000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error]);
+  useEffect(() => {
+    if (status === "ready" && !error) autoRetries.current = 0;
+  }, [status, error]);
+  const errorText =
+    waitSeconds === null
+      ? error?.message || "Something went wrong."
+      : waitSeconds > 120
+        ? `The free-tier model's limit is used up for now; try again in about ${Math.ceil(waitSeconds / 60)} minutes.`
+        : "The free-tier model is still at its limit. Try again in a minute.";
 
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -107,15 +137,15 @@ export function Chat() {
         )}
       </div>
 
-      {busy ? (
-        <BusyNotice busy={busy} />
+      {busy || retrying ? (
+        <BusyNotice busy={(busy ?? retrying)!} />
       ) : (
         status === "submitted" && <p className="text-sm text-stone-500">Thinking…</p>
       )}
 
-      {error && (
+      {error && !retrying && (
         <div className="flex items-center gap-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-          <span>{error.message || "Something went wrong."}</span>
+          <span>{errorText}</span>
           <button type="button" className={buttonQuiet} onClick={() => regenerate()}>
             Try again
           </button>

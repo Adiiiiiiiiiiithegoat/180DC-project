@@ -227,7 +227,16 @@ export function parseDocumentDate(raw: string | null): string | null {
  */
 export async function extractDocument(
   doc: PreparedDocument,
-  { model = groq(EXTRACTION_MODEL), onBusy = () => {} }: { model?: ModelV3; onBusy?: (b: Busy) => void } = {},
+  {
+    model = groq(EXTRACTION_MODEL),
+    onBusy = () => {},
+    onDiagnostics = () => {},
+  }: {
+    model?: ModelV3;
+    onBusy?: (b: Busy) => void;
+    /** How the model call ended, for scripts that want to see it. */
+    onDiagnostics?: (d: { finishReason: string | undefined; outputTokens: number | undefined; replyChars: number }) => void;
+  } = {},
 ): Promise<ExtractedDocument> {
   const content =
     doc.kind === "image"
@@ -251,6 +260,18 @@ export async function extractDocument(
       providerOptions: { groq: { structuredOutputs: false, reasoningEffort: "none" } },
     });
     output = result.output;
+    onDiagnostics({ finishReason: result.finishReason, outputTokens: result.usage.outputTokens, replyChars: result.text.length });
+    // Out of output tokens means the reply is the start of the note, not the
+    // note — even when it arrives as valid JSON (Groq's JSON mode closes it
+    // off), which it does: a 25-line note came back as a tidy 9-line one with
+    // no total, so no mismatch would fire. Never a draft, however it parses.
+    if (result.finishReason === "length") {
+      const read = (output as { lines?: unknown[] } | null)?.lines?.length ?? 0;
+      throw unreadable(
+        `This note has more lines than one upload can read on the free tier: reading stopped after ${read} lines. ` +
+          "Upload it in two parts (e.g. photograph each half of the table).",
+      );
+    }
   } catch (e) {
     if (APICallError.isInstance(e) && e.statusCode === 429) {
       const seconds = retryAfterSeconds(e.responseHeaders);
@@ -261,6 +282,7 @@ export async function extractDocument(
       );
     }
     if (NoObjectGeneratedError.isInstance(e)) {
+      onDiagnostics({ finishReason: e.finishReason, outputTokens: e.usage?.outputTokens, replyChars: e.text?.length ?? 0 });
       throw unreadable(
         e.finishReason === "length"
           ? "That note has more lines than one upload can read on the free tier (about 15). Upload it in parts."

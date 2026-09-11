@@ -8,6 +8,7 @@ Regenerate from `src/` with `node samples/src/render.mjs` (Windows, Edge).
 | File | Layout | What it shows |
 |---|---|---|
 | `kaveri-wholesale-DN-4471.pdf` | Clean printed PDF (read from its text layer) | Two lines matched by item code, one by name ("Ballpoint Pens (Pack of 10)"), and "FRTN SNFLWR RFND OIL 1LTR PCH" left unresolved — pick Sunflower Oil 1L, confirm, and upload it again: that line now resolves from the learned alias. Restocks the three low items. Total agrees (₹8,332.00). |
+| `kaveri-wholesale-DN-4502.pdf` | Same supplier, next delivery (new reference) | Upload after confirming DN-4471: the "FRTN SNFLWR RFND OIL 1LTR PCH" line now resolves to Sunflower Oil 1L by itself ("learned from this supplier"), and no duplicate warning, because the reference is new. Uploading DN-4471 a second time instead shows the duplicate-note warning. |
 | `sharma-traders-challan.jpg` | Messy phone photo: handwritten, rotated, stained, a struck-out quantity | All four lines matched by name, the corrected quantity (15, not 18) read, and the note's grand total ₹7,954 against lines adding to ₹7,594: the ₹360 discrepancy is shown and must be accepted before confirming. |
 | `coastal-fmcg-invoice-2291.png` | GST tax invoice cum delivery note | Rates before tax, CGST + SGST printed separately; lines + tax = grand total (₹5,439.00). |
 

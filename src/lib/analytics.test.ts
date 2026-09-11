@@ -280,6 +280,34 @@ test("getStockHistory: the ledger's last closing balance is what is on the shelf
   assert.equal(h.days.reduce((s, d) => s + d.sold, 0), 443, "30 days of chai sales, as seed-report");
 });
 
+test("every aggregate reaches JavaScript as a number, not a numeric string behind a `number` annotation", async () => {
+  // node-postgres returns bigint and numeric as strings. bigint is parsed once
+  // in src/db (INT8 -> Number) and every numeric is cast to float8 or bigint
+  // in SQL; the row type annotations convert nothing. So walk the real output
+  // of every function and fail on anything that is a string but looks like a number.
+  const { candidates } = await findProduct(u, { query: "masala chai" });
+  const outputs = {
+    findProduct: { candidates },
+    getInventoryStatus: await getInventoryStatus(u),
+    getSalesSummary: await getSalesSummary(u, { days: 30 }, NOW),
+    getSalesSummaryToday: await getSalesSummary(u, { days: 2, includeToday: true }, NOW),
+    getSalesTimeSeries: await getSalesTimeSeries(u, { granularity: "week", days: 90 }, NOW),
+    getProductPerformance: await getProductPerformance(u, { days: 30 }, NOW),
+    getReorderSuggestions: await getReorderSuggestions(u, NOW),
+    getStockHistory: await getStockHistory(u, { productId: candidates[0].id, days: 31 }, NOW),
+  };
+  const offenders: string[] = [];
+  let numbers = 0;
+  const walk = (v: unknown, path: string) => {
+    if (typeof v === "number") numbers++;
+    else if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) offenders.push(`${path} = ${JSON.stringify(v)}`);
+    else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) walk(x, `${path}.${k}`);
+  };
+  walk(outputs, "");
+  assert.deepEqual(offenders, []);
+  assert.ok(numbers > 500, `checked ${numbers} numeric values`);
+});
+
 test("another account sees none of it", async () => {
   const stranger = randomUUID();
   const s = await getSalesSummary(stranger, { days: 90 }, NOW);

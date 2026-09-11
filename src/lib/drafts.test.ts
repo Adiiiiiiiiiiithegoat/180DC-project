@@ -19,9 +19,11 @@ import { MockLanguageModelV3 } from "ai/test";
 import { db, pool } from "../db";
 import { users } from "../db/auth-schema";
 import { products, receipts, supplierAliases } from "../db/schema";
-import { createDraft, discardDraft, getDraft, listDrafts, uploadToDraft } from "./drafts";
+import { randomUUID } from "node:crypto";
+import { createDraft, discardDraft, getDraft, listDrafts, matchLines, uploadToDraft } from "./drafts";
 import { parseDocumentDate, sniff, type ExtractedDocument } from "./extraction";
-import { ServiceError, receiveGoods } from "./services";
+import { isUniqueViolation } from "./pg-error";
+import { ServiceError, normalizeLineText, receiveGoods } from "./services";
 
 const sample = (path: string) => new Uint8Array(readFileSync(`samples/${path}`));
 let seq = 0;
@@ -63,11 +65,11 @@ async function inventory(userId: string) {
 }
 
 /** A model that answers every call with `reply`, and records what it was asked. */
-const modelReplying = (reply: unknown) =>
+const modelReplying = (reply: unknown, finish: "stop" | "length" = "stop") =>
   new MockLanguageModelV3({
     doGenerate: async () => ({
       content: [{ type: "text", text: typeof reply === "string" ? reply : JSON.stringify(reply) }],
-      finishReason: { unified: "stop", raw: "stop" },
+      finishReason: { unified: finish, raw: finish },
       usage: {
         inputTokens: { total: 2100, noCache: 2100, cacheRead: undefined, cacheWrite: undefined },
         outputTokens: { total: 200, text: 200, reasoning: undefined },
@@ -184,6 +186,26 @@ test("a reply carrying any field outside the schema is rejected whole, and nothi
   assert.deepEqual(await listDrafts(userId), []);
 });
 
+test("a reply cut off by the output cap is refused even when it parses, never a partial draft", async () => {
+  const { userId } = await newShop();
+  const before = await inventory(userId);
+  // What the real model did with a 25-line note: valid JSON, 9 lines, no total.
+  const cutOff = modelReplying(
+    {
+      isDeliveryNote: true, supplier: "Mangalore Bulk Traders", ref: "MBT/7719", date: "11/09/2026",
+      lines: Array.from({ length: 9 }, (_, i) => ({ item: `Item ${i + 1}`, code: null, qty: 1, rate: 10, amount: 10, unsure: [] })),
+      tax: null, total: null, unsure: [],
+    },
+    "length",
+  );
+  await assert.rejects(
+    uploadToDraft(userId, sample("test-documents/long-delivery-note-25-lines.png"), { model: cutOff }),
+    (e) => e instanceof ServiceError && e.code === "unreadable_document" && /stopped after 9 lines/.test(e.message),
+  );
+  assert.deepEqual(await listDrafts(userId), [], "no draft at all");
+  assert.deepEqual(await inventory(userId), before);
+});
+
 test("matching in Postgres: item code first, then trigram name, and an unrecognised name is left for a person", async () => {
   const { userId, id } = await newShop();
   const before = await inventory(userId);
@@ -235,14 +257,14 @@ test("confirming a draft moves stock and recomputes average cost, exactly once, 
   const { rows: moves } = await db.execute(sql`SELECT COUNT(*) AS n FROM stock_movements WHERE reference_id = ${receipt.id} AND reason = 'receipt'`);
   assert.equal(moves[0].n, 4, "one movement per line");
 
-  // Exactly once: the second confirm finds no draft and changes nothing.
+  // Exactly once: the second confirm is a conflict and changes nothing.
   const after = await inventory(userId);
-  await assert.rejects(confirm(), code("not_found"));
+  await assert.rejects(confirm(), code("conflict"));
   assert.deepEqual(await inventory(userId), after);
 
   // Learned: the same note from the same supplier now resolves itself.
   const [alias] = await db.select().from(supplierAliases)
-    .where(and(eq(supplierAliases.userId, userId), eq(supplierAliases.rawText, "frtn snflwr rfnd oil 1ltr pch")));
+    .where(and(eq(supplierAliases.userId, userId), eq(supplierAliases.rawText, "FRTN SNFLWR RFND OIL 1LTR PCH")));
   assert.equal(alias.productId, id["STP-OIL-1L"]);
   const again = (await getDraft(userId, (await createDraft(userId, kaveri())).id))!.extraction.lines[3].match;
   assert.deepEqual([again.by, again.productId], ["alias", id["STP-OIL-1L"]]);
@@ -288,6 +310,138 @@ test("a draft belongs to its account: another user cannot read, list, confirm or
   assert.equal(row.status, "draft", "untouched by all of that");
   await discardDraft(userId, draft.id);
   assert.equal(await getDraft(userId, draft.id), null);
+});
+
+/** Runs two calls at once and records when each started and finished, to prove they overlapped. */
+async function race<A, B>(a: () => Promise<A>, b: () => Promise<B>) {
+  const t0 = performance.now();
+  const timed = async <T,>(f: () => Promise<T>) => {
+    const start = performance.now() - t0;
+    const result = await f().then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }));
+    return { ...result, start, end: performance.now() - t0 };
+  };
+  const [ra, rb] = await Promise.all([timed(a), timed(b)]);
+  const overlapped = ra.start < rb.end && rb.start < ra.end;
+  console.log(`      A ${ra.start.toFixed(0)}ms -> ${ra.end.toFixed(0)}ms | B ${rb.start.toFixed(0)}ms -> ${rb.end.toFixed(0)}ms | overlapped=${overlapped}`);
+  return { results: [ra, rb], overlapped };
+}
+
+const kaveriLines = (id: Record<string, string>) => [
+  { productId: id["STP-RICE-1K"], quantity: 20, unitCost: 12800, rawText: "Basmati Rice 1kg" },
+  { productId: id["HH-DISH-500"], quantity: 24, unitCost: 7900, rawText: "Dish Soap 500ml" },
+  { productId: id["STN-PEN-10"], quantity: 30, unitCost: 6600, rawText: "Ballpoint Pens (Pack of 10)" },
+  { productId: id["STP-OIL-1L"], quantity: 12, unitCost: 15800, rawText: "FRTN SNFLWR RFND OIL 1LTR PCH" },
+];
+const onHand = async (productId: string) => (await db.select().from(products).where(eq(products.id, productId)))[0].quantityOnHand;
+
+test("two confirms of one draft at once: exactly one receives, the other is a 409 conflict", async () => {
+  const { userId, id } = await newShop();
+  const draft = await createDraft(userId, kaveri());
+  const body = { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", source: "upload", lines: kaveriLines(id) };
+  const confirm = () => receiveGoods(userId, body, { draftId: draft.id });
+
+  const { results, overlapped } = await race(confirm, confirm);
+  assert.ok(overlapped, "the two confirms were in flight at the same time");
+  assert.equal(results.filter((r) => r.ok).length, 1, "exactly one succeeds");
+  const lost = results.find((r) => !r.ok)!;
+  assert.ok(!lost.ok && lost.error instanceof ServiceError && lost.error.code === "conflict", "the other is a conflict (HTTP 409), not a not-found");
+
+  const { rows } = await db.execute<{ n: number }>(sql`SELECT COUNT(*) AS n FROM stock_movements WHERE reference_id = ${draft.id}`);
+  assert.equal(rows[0].n, 4, "exactly four movements");
+  assert.equal(await onHand(id["STP-RICE-1K"]), 30, "10 + 20, once");
+  assert.equal(await onHand(id["STP-OIL-1L"]), 22, "10 + 12, once");
+
+  // And afterwards, a plain second confirm says the same thing.
+  await assert.rejects(confirm(), (e) => e instanceof ServiceError && e.code === "conflict" && e.details?.alreadyConfirmed === true);
+});
+
+test("a second note with the same supplier and reference needs acknowledging before it is received", async () => {
+  const { userId, id } = await newShop();
+  const lines = kaveriLines(id);
+  const first = await createDraft(userId, kaveri());
+  await receiveGoods(userId, { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", lines }, { draftId: first.id });
+
+  // The same paper uploaded again: the review screen is told before anyone clicks...
+  const again = await createDraft(userId, kaveri());
+  const draft = (await getDraft(userId, again.id))!;
+  assert.equal(draft.duplicateOf?.id, first.id);
+
+  // ...and the server refuses without the acknowledgement, whatever the case and spacing of the reference.
+  const before = await inventory(userId);
+  await assert.rejects(
+    receiveGoods(userId, { supplierName: "kaveri wholesale distributors", reference: " kwd/dn/4471 ", lines }, { draftId: again.id }),
+    (e) => e instanceof ServiceError && e.code === "conflict" && e.details?.duplicateOf === first.id,
+  );
+  assert.deepEqual(await inventory(userId), before, "refused means nothing moved");
+
+  // Acknowledged: received.
+  await receiveGoods(userId, { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", lines, acceptDuplicate: true }, { draftId: again.id });
+  assert.equal((await inventory(userId)).confirmed, before.confirmed + 1);
+
+  // A new reference from the same supplier is simply the next delivery.
+  const next = await createDraft(userId, kaveri({ reference: "KWD/DN/4502" }));
+  assert.equal((await getDraft(userId, next.id))!.duplicateOf, null);
+});
+
+test("two drafts of the same note confirmed at the same moment: the second still sees the first", async () => {
+  const { userId, id } = await newShop();
+  const [a, b] = [await createDraft(userId, kaveri()), await createDraft(userId, kaveri())];
+  const body = { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", lines: kaveriLines(id) };
+  const { results, overlapped } = await race(
+    () => receiveGoods(userId, body, { draftId: a.id }),
+    () => receiveGoods(userId, body, { draftId: b.id }),
+  );
+  assert.ok(overlapped);
+  assert.equal(results.filter((r) => r.ok).length, 1, "the advisory lock makes them take turns");
+  const lost = results.find((r) => !r.ok)!;
+  assert.ok(!lost.ok && lost.error instanceof ServiceError && typeof lost.error.details?.duplicateOf === "string");
+  assert.equal(await onHand(id["STP-RICE-1K"]), 30);
+});
+
+test("supplier aliases: one per text even with no supplier, and text is compared normalised", async () => {
+  const { userId, id } = await newShop();
+  assert.equal(normalizeLineText("FRTN SNFLWR RFND OIL 1LTR"), normalizeLineText("  frtn snflwr   rfnd oil 1ltr "));
+  assert.equal(normalizeLineText("1LTR"), normalizeLineText(" 1ltr "));
+
+  // NULLS NOT DISTINCT: two null-supplier aliases for one text are one too many.
+  await db.insert(supplierAliases).values({ userId, supplierId: null, rawText: "SAME TEXT", productId: id["HH-DISH-500"] });
+  await assert.rejects(
+    db.insert(supplierAliases).values({ userId, supplierId: null, rawText: "SAME TEXT", productId: id["STP-OIL-1L"] }),
+    (e) => isUniqueViolation(e, "supplier_aliases_key"),
+  );
+
+  // A note with no supplier still teaches, and the lesson survives case and spacing.
+  const draft = await createDraft(userId, kaveri({ supplierName: null }));
+  await receiveGoods(userId, { lines: [{ productId: id["STP-OIL-1L"], quantity: 1, unitCost: 15800, rawText: "Fortune Oil 1LTR" }], acceptTotalMismatch: true }, { draftId: draft.id });
+  const [learned] = await matchLines(userId, null, [{ rawText: "  fortune   oil 1ltr ", code: null }]);
+  assert.deepEqual([learned.by, learned.productId], ["alias", id["STP-OIL-1L"]]);
+  const [row] = await db.select().from(supplierAliases).where(and(eq(supplierAliases.userId, userId), eq(supplierAliases.productId, id["STP-OIL-1L"])));
+  assert.equal(row.rawText, "FORTUNE OIL 1LTR", "stored uppercase, whitespace collapsed");
+  assert.equal(row.supplierId, null);
+});
+
+test("an item code that matches no product falls through to the name", async () => {
+  const { userId, id } = await newShop();
+  const [junk, none] = await matchLines(userId, null, [
+    { rawText: "Dish Soap 500 ml", code: "ZZ-NOPE-999" },
+    { rawText: "Something Else Entirely", code: "ZZ-NOPE-999" },
+  ]);
+  assert.deepEqual([junk.by, junk.productId], ["name", id["HH-DISH-500"]]);
+  assert.equal(none.productId, null, "and a junk code with an unmatchable name stays unresolved");
+});
+
+test("manual receiving: a double submit with one idempotency key receives once", async () => {
+  const { userId, id } = await newShop();
+  const body = { idempotencyKey: `form-${randomUUID()}`, lines: [{ productId: id["HH-COIL-10"], quantity: 7, unitCost: 4200 }] };
+  const { results, overlapped } = await race(() => receiveGoods(userId, body), () => receiveGoods(userId, body));
+  assert.ok(overlapped);
+  assert.ok(results.every((r) => r.ok), "both calls succeed from the caller's point of view");
+  const [a, b] = results.map((r) => (r.ok ? r.value : null)!);
+  assert.equal(a.id, b.id, "and both return the same receipt");
+  assert.equal([a, b].filter((r) => "idempotentReplay" in r).length, 1, "one of them is the replay");
+  assert.equal(await onHand(id["HH-COIL-10"]), 17, "10 + 7, once");
+  const { rows } = await db.execute<{ n: number }>(sql`SELECT COUNT(*) AS n FROM stock_movements WHERE reference_id = ${a.id}`);
+  assert.equal(rows[0].n, 1);
 });
 
 test("printed dates are read day first, as Indian documents write them", () => {

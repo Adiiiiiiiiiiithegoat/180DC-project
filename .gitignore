@@ -49,3 +49,5 @@ walkthrough/
 .claude/skills/
 skills-lock.json
 *.pdf
+# ...except the sample delivery notes and test documents, which the demo and the tests need
+!samples/**/*.pdf

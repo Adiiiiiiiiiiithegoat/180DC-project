@@ -88,18 +88,18 @@ export type InternalOptions = {
   /**
    * Confirm this upload draft rather than create a new receipt. It comes from
    * the confirm route's URL, never a body, and is checked against the session
-   * user in the same WHERE clause that flips the status — so a draft that is
-   * someone else's, or already confirmed, is simply not found.
+   * user in the same WHERE clause that flips the status — so someone else's
+   * draft is not found, and one already confirmed is a conflict.
    */
   draftId?: string;
 };
 
 /**
- * An uploaded line's text reduced to what identifies it, so "Toor Dal  1 KG"
- * and "toor dal 1 kg" are one supplier alias. Every alias is written and looked
- * up through this.
+ * An uploaded line's text reduced to what identifies it, so "Toor Dal  1 kg"
+ * and " TOOR DAL 1 KG" are one supplier alias: trimmed, whitespace collapsed,
+ * uppercase. Every alias is written and looked up through this.
  */
-export const normalizeLineText = (text: string) => text.trim().replace(/\s+/g, " ").toLowerCase();
+export const normalizeLineText = (text: string) => text.trim().replace(/\s+/g, " ").toUpperCase();
 
 const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -137,8 +137,12 @@ async function loadOwnedProducts(
  *
  * Manual entry and a confirmed upload both come through here. The only
  * difference an upload makes: the draft row becomes the receipt (instead of a
- * new row), its document total is checked against the lines, and each line's
- * printed text is learned as a supplier alias.
+ * new row), its document total and its supplier + reference are checked
+ * (each needs a person's acknowledgement to pass), and each line's printed
+ * text is learned as a supplier alias.
+ *
+ * A new receipt with an idempotency key the account has used before is not
+ * received again: the existing receipt is returned (section 5, rule 3).
  */
 export async function receiveGoods(
   userId: string,
@@ -146,6 +150,28 @@ export async function receiveGoods(
   options: InternalOptions = {},
 ) {
   const input = receiveGoodsInputSchema.parse(rawInput);
+  try {
+    return await receiveGoodsOnce(userId, input, options);
+  } catch (e) {
+    // Same pattern as recordSale: the second submission's INSERT waits on the
+    // first's unique-index entry, then violates it once the first commits.
+    // Its transaction has rolled back; hand back the receipt that exists.
+    if (input.idempotencyKey && isUniqueViolation(e, "receipts_user_idempotency_key")) {
+      const [existing] = await db
+        .select()
+        .from(receipts)
+        .where(and(eq(receipts.userId, userId), eq(receipts.idempotencyKey, input.idempotencyKey)));
+      if (existing) return { ...existing, idempotentReplay: true };
+    }
+    throw e;
+  }
+}
+
+async function receiveGoodsOnce(
+  userId: string,
+  input: ReturnType<typeof receiveGoodsInputSchema.parse>,
+  options: InternalOptions,
+) {
   const at = options.at ?? new Date();
 
   return db.transaction(async (tx) => {
@@ -163,16 +189,27 @@ export async function receiveGoods(
       if (!owned) throw new ServiceError("not_found", "no such supplier for this account");
       supplierId = owned.id;
     } else if (input.supplierName) {
-      // Find-or-create by (user_id, name). The no-op update is what makes
-      // RETURNING hand back the existing row on conflict.
-      const [supplier] = await tx
-        .insert(suppliers)
-        .values({ userId, name: input.supplierName })
-        .onConflictDoUpdate({
-          target: [suppliers.userId, suppliers.name],
-          set: { name: sql`excluded.name` },
-        })
-        .returning({ id: suppliers.id });
+      // Find, ignoring case — "SHARMA TRADERS" read off a note and "Sharma
+      // Traders" typed by hand are one supplier — or create. The no-op update
+      // is what makes RETURNING hand back the existing row on conflict.
+      // ponytail: two first-ever receipts naming one new supplier in different
+      // cases, at the same instant, could still make two rows; a unique index
+      // on (user_id, lower(name)) closes that if it ever happens.
+      const [existing] = await tx
+        .select({ id: suppliers.id })
+        .from(suppliers)
+        .where(and(eq(suppliers.userId, userId), sql`lower(${suppliers.name}) = lower(${input.supplierName})`))
+        .limit(1);
+      const [supplier] = existing
+        ? [existing]
+        : await tx
+            .insert(suppliers)
+            .values({ userId, name: input.supplierName })
+            .onConflictDoUpdate({
+              target: [suppliers.userId, suppliers.name],
+              set: { name: sql`excluded.name` },
+            })
+            .returning({ id: suppliers.id });
       supplierId = supplier.id;
     }
 
@@ -186,19 +223,53 @@ export async function receiveGoods(
 
     let receipt;
     if (options.draftId) {
-      // A draft moved no stock; this is the moment it does.
+      const draftId = uuid.parse(options.draftId);
+      // A draft moved no stock; this is the moment it does. Two confirms of
+      // one draft: the second UPDATE waits on the first's row lock, then
+      // re-reads the row under READ COMMITTED, sees 'confirmed', matches
+      // nothing — so exactly one of them moves stock.
       [receipt] = await tx
         .update(receipts)
         .set({ ...header, source: "upload" })
-        .where(
-          and(
-            eq(receipts.id, uuid.parse(options.draftId)),
-            eq(receipts.userId, userId),
-            eq(receipts.status, "draft"),
-          ),
-        )
+        .where(and(eq(receipts.id, draftId), eq(receipts.userId, userId), eq(receipts.status, "draft")))
         .returning();
-      if (!receipt) throw new ServiceError("not_found", "no such draft for this account, or it is already confirmed");
+      if (!receipt) {
+        const [mine] = await tx
+          .select({ status: receipts.status })
+          .from(receipts)
+          .where(and(eq(receipts.id, draftId), eq(receipts.userId, userId)));
+        if (mine) throw new ServiceError("conflict", "this delivery note has already been confirmed", { alreadyConfirmed: true });
+        throw new ServiceError("not_found", "no such draft for this account");
+      }
+
+      // The same supplier's note with the same reference, already received:
+      // most likely the same paper uploaded twice. The advisory lock makes two
+      // drafts of one note confirmed at once take turns, so the second sees the
+      // first. Both a supplier and a reference are needed to call it the same.
+      const reference = input.reference?.trim();
+      if (supplierId && reference) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`receipt:${userId}:${supplierId}:${reference.toUpperCase()}`}))`);
+        const [duplicate] = await tx
+          .select({ id: receipts.id, confirmedAt: receipts.confirmedAt })
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.userId, userId),
+              eq(receipts.supplierId, supplierId),
+              eq(receipts.status, "confirmed"),
+              sql`upper(btrim(${receipts.reference})) = ${reference.toUpperCase()}`,
+              sql`${receipts.id} <> ${draftId}`,
+            ),
+          )
+          .limit(1);
+        if (duplicate && !input.acceptDuplicate) {
+          throw new ServiceError(
+            "conflict",
+            "a receipt from this supplier with this reference has already been confirmed; check it is not the same delivery, or accept to receive it again",
+            { duplicateOf: duplicate.id, duplicateConfirmedAt: duplicate.confirmedAt },
+          );
+        }
+      }
 
       // Section 3: the document's stated total against what is being confirmed.
       const doc = receipt.extraction as { statedTotalPaise?: number | null; taxPaise?: number | null } | null;
@@ -214,7 +285,7 @@ export async function receiveGoods(
     } else {
       [receipt] = await tx
         .insert(receipts)
-        .values({ userId, ...header, source: input.source, createdAt: at })
+        .values({ userId, ...header, source: input.source, idempotencyKey: input.idempotencyKey ?? null, createdAt: at })
         .returning();
     }
 
@@ -229,12 +300,14 @@ export async function receiveGoods(
     );
 
     // What this supplier calls each product, confirmed by a person: next time
-    // the same text maps straight through. Deduplicated first, because one
-    // upsert cannot touch the same alias twice.
+    // the same text maps straight through. A note with no supplier learns an
+    // alias with a null supplier (one per text: the constraint is NULLS NOT
+    // DISTINCT). Deduplicated first, because one upsert cannot touch the same
+    // alias twice.
     const aliases = new Map(
       input.lines.filter((l) => l.rawText).map((l) => [normalizeLineText(l.rawText!), l.productId]),
     );
-    if (supplierId && aliases.size > 0) {
+    if (aliases.size > 0) {
       await tx
         .insert(supplierAliases)
         .values([...aliases].map(([rawText, productId]) => ({ userId, supplierId, rawText, productId })))

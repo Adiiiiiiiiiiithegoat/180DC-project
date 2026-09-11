@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { api } from "@/lib/api-client";
+import { ApiError, api } from "@/lib/api-client";
 // Types only: erased at build, so nothing server-side is bundled for the browser.
 import type { DraftDocument, DraftLine } from "@/lib/drafts";
 import { formatPaise, paiseToInput, parseRupees } from "@/lib/money";
@@ -53,7 +53,19 @@ function matchLabel(line: DraftLine): { text: string; tone: string } {
   };
 }
 
-export function DraftReview({ draftId, doc, products }: { draftId: string; doc: DraftDocument; products: Product[] }) {
+type Duplicate = { id: string; confirmedAt: string };
+
+export function DraftReview({
+  draftId,
+  doc,
+  products,
+  duplicateOf,
+}: {
+  draftId: string;
+  doc: DraftDocument;
+  products: Product[];
+  duplicateOf: Duplicate | null;
+}) {
   const router = useRouter();
   const byId = new Map(products.map((p) => [p.id, p]));
   const [supplierName, setSupplierName] = useState(doc.supplierName ?? "");
@@ -70,6 +82,8 @@ export function DraftReview({ draftId, doc, products }: { draftId: string; doc: 
     })),
   );
   const [acceptMismatch, setAcceptMismatch] = useState(false);
+  const [duplicate, setDuplicate] = useState<Duplicate | null>(duplicateOf);
+  const [acceptDuplicate, setAcceptDuplicate] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -86,7 +100,7 @@ export function DraftReview({ draftId, doc, products }: { draftId: string; doc: 
   const stated = doc.statedTotalPaise;
   const mismatch = stated !== null && stated !== linesTotal;
   const problems = included.filter((p) => !p.row.productId || !p.quantity || p.unitCost === null);
-  const canConfirm = included.length > 0 && problems.length === 0 && (!mismatch || acceptMismatch) && !busy;
+  const canConfirm = included.length > 0 && problems.length === 0 && (!mismatch || acceptMismatch) && (!duplicate || acceptDuplicate) && !busy;
 
   async function confirm() {
     setBusy(true);
@@ -97,6 +111,7 @@ export function DraftReview({ draftId, doc, products }: { draftId: string; doc: 
         reference: reference.trim() || undefined,
         receivedAt,
         acceptTotalMismatch: acceptMismatch,
+        acceptDuplicate,
         lines: included.map((p) => ({
           productId: p.row.productId,
           quantity: p.quantity,
@@ -108,6 +123,11 @@ export function DraftReview({ draftId, doc, products }: { draftId: string; doc: 
       setMessage({ ok: true, text: `Received ${units} units on ${included.length} line(s). Stock and average costs are updated.` });
       setTimeout(() => router.push("/receive"), 1500);
     } catch (e) {
+      // The supplier or reference may have been edited into a match since the page loaded.
+      if (e instanceof ApiError && typeof e.data.duplicateOf === "string") {
+        setDuplicate({ id: e.data.duplicateOf, confirmedAt: String(e.data.duplicateConfirmedAt) });
+        setAcceptDuplicate(false);
+      }
       setMessage({ ok: false, text: (e as Error).message });
       setBusy(false);
     }
@@ -249,6 +269,20 @@ export function DraftReview({ draftId, doc, products }: { draftId: string; doc: 
           </tbody>
         </table>
       </div>
+
+      {duplicate && (
+        <div className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm" data-testid="duplicate-check">
+          <p className="font-medium text-amber-900">
+            A receipt from {supplierName || "this supplier"} with reference {reference || "—"} was already confirmed on{" "}
+            {new Date(duplicate.confirmedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" })}.
+            If this is the same delivery note, confirming it again would receive the goods twice.
+          </p>
+          <label className="mt-2 flex items-center gap-2 text-amber-900">
+            <input type="checkbox" checked={acceptDuplicate} onChange={(e) => setAcceptDuplicate(e.target.checked)} />
+            This is a different delivery: receive it again.
+          </label>
+        </div>
+      )}
 
       <div
         className={`rounded border px-4 py-3 text-sm ${mismatch ? "border-red-300 bg-red-50" : "border-emerald-200 bg-emerald-50"}`}

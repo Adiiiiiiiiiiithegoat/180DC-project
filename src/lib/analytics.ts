@@ -341,6 +341,11 @@ const PERFORMANCE_ORDER = {
   units: sql`units DESC, name`,
   biggest_decline: sql`revenue_change ASC, name`,
   biggest_growth: sql`revenue_change DESC, name`,
+  // Velocity: units sold against the equal window before (both are the same
+  // length, so this is units per day, scaled). Units, not revenue, so a price
+  // change or a promotion does not read as a product selling faster.
+  speeding_up: sql`units - p_units DESC, name`,
+  slowing_down: sql`units - p_units ASC, name`,
 } as const;
 
 /**

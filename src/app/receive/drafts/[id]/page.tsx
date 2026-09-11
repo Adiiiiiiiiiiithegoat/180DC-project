@@ -22,6 +22,7 @@ export default async function DraftPage({ params }: { params: Promise<{ id: stri
       <DraftReview
         draftId={draft.id}
         doc={draft.extraction}
+        duplicateOf={draft.duplicateOf && { id: draft.duplicateOf.id, confirmedAt: draft.duplicateOf.confirmedAt.toISOString() }}
         products={products.map((p) => ({
           id: p.id,
           name: p.name,

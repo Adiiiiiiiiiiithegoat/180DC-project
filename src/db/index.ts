@@ -32,6 +32,22 @@ types.setTypeParser(types.builtins.INT8, Number);
  * not support them, and Drizzle's node-postgres driver does not use them unless
  * asked.
  */
+/**
+ * The Neon endpoint of the `production` branch. Tests reset schemas and write
+ * freely, so under the test runner (which sets NODE_TEST_CONTEXT in every test
+ * process) a DATABASE_URL pointing here refuses to connect at all.
+ */
+const PRODUCTION_DB_ENDPOINT = "ep-jolly-mouse-aevwn5qm";
+export function assertNotProductionUnderTest(url = process.env.DATABASE_URL, testContext = process.env.NODE_TEST_CONTEXT) {
+  if (testContext && url?.includes(PRODUCTION_DB_ENDPOINT)) {
+    throw new Error(
+      `Refusing to run tests against the production database (${PRODUCTION_DB_ENDPOINT}). ` +
+        "Point DATABASE_URL at the dev or local branch (.env.test / .env.development.local).",
+    );
+  }
+}
+assertNotProductionUnderTest();
+
 const globalForDb = globalThis as unknown as { pool?: Pool };
 
 export const pool =

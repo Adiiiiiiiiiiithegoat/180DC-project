@@ -85,11 +85,16 @@ export const receipts = pgTable(
     // An upload's draft: what the document said, line by line, and how each
     // line matched (section 3). Data only — the file itself is never stored.
     extraction: jsonb("extraction"),
+    // Section 5, rule 3, as for sales: the receiving screen sends one key per
+    // form, so a double click or a retry carries the same key and collides.
+    // Null for drafts and for callers that send none (NULLs are distinct).
+    idempotencyKey: text("idempotency_key"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (t) => [
+    unique("receipts_user_idempotency_key").on(t.userId, t.idempotencyKey),
     index("receipts_user_status_idx").on(t.userId, t.status),
     check("receipts_status_check", sql`${t.status} IN ('draft','confirmed')`),
     check("receipts_source_check", sql`${t.source} IN ('manual','upload')`),
@@ -130,7 +135,9 @@ export const supplierAliases = pgTable(
       .notNull()
       .references(() => products.id, { onDelete: "cascade" }),
   },
-  (t) => [unique("supplier_aliases_key").on(t.userId, t.supplierId, t.rawText)],
+  // NULLS NOT DISTINCT: an alias learned from a receipt with no supplier is
+  // still one alias per text, not a new row every time.
+  (t) => [unique("supplier_aliases_key").on(t.userId, t.supplierId, t.rawText).nullsNotDistinct()],
 );
 
 export const promotions = pgTable(

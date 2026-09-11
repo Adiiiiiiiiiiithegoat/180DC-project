@@ -15,20 +15,25 @@ const shortDate = (iso: string) =>
   new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
 
 /**
- * DESIGN.md section 9: four things, no more, each from one call to the same
+ * DESIGN.md section 9: five things, no more, each from one call to the same
  * function the assistant's tool calls. The revenue here and the assistant's
  * "revenue for the last 30 days" are the same getSalesSummary call, so they
  * cannot disagree.
  */
 export default async function DashboardPage() {
   const userId = await requireUserId();
-  const [summary, weekly, top, stock, reorder] = await Promise.all([
+  const [summary, weekly, top, rising, falling, stock, reorder] = await Promise.all([
     getSalesSummary(userId, { days: 30 }),
     getSalesTimeSeries(userId, { granularity: "week", days: 90 }),
     getProductPerformance(userId, { days: 30, sortBy: "revenue", limit: 5 }),
+    getProductPerformance(userId, { days: 30, sortBy: "speeding_up", limit: 3 }),
+    getProductPerformance(userId, { days: 30, sortBy: "slowing_down", limit: 3 }),
     getInventoryStatus(userId),
     getReorderSuggestions(userId),
   ]);
+  // Only real movement: a product selling exactly as before is neither.
+  const speedingUp = rising.products.filter((p) => p.units > p.previousUnits);
+  const slowingDown = falling.products.filter((p) => p.units < p.previousUnits);
 
   const change = "change" in summary ? summary.change.revenuePct : null;
   const attention = reorder.products.filter((p) => p.status === "reorder_now");
@@ -109,7 +114,46 @@ export default async function DashboardPage() {
         </dl>
       </section>
 
-      {/* 4. Reorder attention: getReorderSuggestions, computed on page load */}
+      {/* 4. Fast and slow movers: getProductPerformance by change in units sold */}
+      <section className={`${card} lg:col-span-2`} aria-labelledby="movers-title">
+        <h2 id="movers-title" className="text-sm font-semibold">Movers</h2>
+        <p className="mb-3 text-xs text-stone-500">
+          Units sold per day, {top.period ? `${shortDate(top.period.from)} – ${shortDate(top.period.to)}` : "last 30 days"} against
+          the 30 days before. Complete days only.
+        </p>
+        <div className="grid gap-6 sm:grid-cols-2">
+          {[
+            { title: "Speeding up", items: speedingUp, tone: "text-emerald-700", none: "Nothing is selling faster." },
+            { title: "Slowing down", items: slowingDown, tone: "text-red-700", none: "Nothing is selling slower." },
+          ].map((group) => (
+            <div key={group.title}>
+              <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-stone-500">{group.title}</h3>
+              {group.items.length === 0 ? (
+                <p className="text-sm text-stone-500">{group.none}</p>
+              ) : (
+                <table className="w-full">
+                  <tbody>
+                    {group.items.map((p) => (
+                      <tr key={p.id} className="border-b border-stone-100">
+                        <td className={td}>
+                          <Link href={`/products/${p.id}`} className="hover:underline">{p.name}</Link>
+                        </td>
+                        <td className={`${td} text-right tabular-nums text-stone-500`}>{p.previousUnitsPerDay} → </td>
+                        <td className={`${td} text-right tabular-nums font-medium`}>{p.unitsPerDay}/day</td>
+                        <td className={`${td} text-right tabular-nums ${group.tone}`}>
+                          {p.unitsChangePct === null ? "new" : `${p.unitsChangePct > 0 ? "+" : ""}${p.unitsChangePct}%`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 5. Reorder attention: getReorderSuggestions, computed on page load */}
       <section className={`${card} lg:col-span-2`} aria-labelledby="reorder-title">
         <h2 id="reorder-title" className="text-sm font-semibold">Needs reordering</h2>
         <p className="mb-3 text-xs text-stone-500">

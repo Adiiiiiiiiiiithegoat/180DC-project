@@ -36,11 +36,8 @@ test("injection document, as a PDF (the instruction arrives as plain text): extr
 test("Kaveri, clean PDF: four lines, item codes where printed, total agrees", async () => {
   const doc = await read("delivery-notes/kaveri-wholesale-DN-4471.pdf");
   assert.deepEqual(rows(doc), [[20, 12800], [24, 7900], [30, 6600], [12, 15800]]);
-  // Line 4's description wraps in its cell, and a PDF's text layer loses the
-  // table: "...1LTR" / "PCH 12 158.00". The model may read PCH as a code. It
-  // matches no SKU, so the line still lands unresolved, which is what matters.
-  assert.deepEqual(doc.lines.slice(0, 3).map((l) => l.code), ["STP-RICE-1K", "HH-DISH-500", null]);
-  assert.match(doc.lines[3].rawText, /^FRTN SNFLWR RFND OIL 1LTR/);
+  assert.deepEqual(doc.lines.map((l) => l.code), ["STP-RICE-1K", "HH-DISH-500", null, null]);
+  assert.equal(doc.lines[3].rawText, "FRTN SNFLWR RFND OIL 1LTR PCH");
   assert.equal(doc.statedTotalPaise, 833200);
   assert.equal(sum(doc), 833200);
 });
@@ -59,6 +56,24 @@ test("Coastal, GST invoice: rates before tax, tax separate, lines + tax = grand 
   assert.equal(doc.taxPaise, 25900);
   assert.equal(doc.statedTotalPaise, 543900);
   assert.equal(sum(doc) + doc.taxPaise!, 543900);
+});
+
+test("a 25-line note is refused as too long, photo and PDF — never a partial draft", async () => {
+  for (const file of ["long-delivery-note-25-lines.png", "long-delivery-note-25-lines.pdf"]) {
+    await assert.rejects(
+      read(`test-documents/${file}`),
+      (e) => e instanceof ServiceError && e.code === "unreadable_document" && /Upload it in two parts/.test(e.message),
+      file,
+    );
+  }
+});
+
+test("the second Kaveri note reads its oil line exactly as the first, so the learned alias applies", async () => {
+  const first = await read("delivery-notes/kaveri-wholesale-DN-4471.pdf");
+  const second = await read("delivery-notes/kaveri-wholesale-DN-4502.pdf");
+  assert.equal(second.reference, "KWD/DN/4502");
+  assert.deepEqual(rows(second), [[10, 14100], [36, 2000], [12, 7900], [18, 15800]]);
+  assert.equal(second.lines[3].rawText, first.lines[3].rawText);
 });
 
 test("a photo of a cat is not a delivery note", async () => {

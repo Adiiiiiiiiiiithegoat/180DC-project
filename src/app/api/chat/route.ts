@@ -5,6 +5,7 @@ import {
   createUIMessageStreamResponse,
 } from "ai";
 import { createAssistant } from "@/lib/assistant";
+import { retryAfterSeconds } from "@/lib/backoff";
 import { unauthorized } from "@/lib/http";
 import { sessionUserId } from "@/lib/session";
 
@@ -35,8 +36,11 @@ export async function POST(request: Request) {
       writer.merge(await createAgentUIStream({ agent, uiMessages, abortSignal: request.signal }));
     },
     onError: (error) => {
+      // The server already waited out what it could (backoffMiddleware). Tell
+      // the browser how long Groq wants: "rate_limited:<seconds>", which the
+      // chat turns into a countdown and a retry of its own (chat.tsx).
       if (APICallError.isInstance(error) && error.statusCode === 429) {
-        return "The free-tier model has hit its usage limit for now. Wait a minute or two and ask again.";
+        return `rate_limited:${Math.ceil(retryAfterSeconds(error.responseHeaders) ?? 60)}`;
       }
       console.error(error);
       return "Something went wrong reaching the model. Try again.";

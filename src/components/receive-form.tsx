@@ -39,6 +39,10 @@ export function ReceiveForm({
   const [lines, setLines] = useState<Line[]>([blank()]);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  // One key per receipt being entered (section 5, rule 3). A double click or a
+  // retry after a timeout sends the same key, and the server returns the
+  // receipt it already made instead of receiving the goods twice.
+  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
 
   const update = (key: string, patch: Partial<Line>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -63,11 +67,13 @@ export function ReceiveForm({
         supplierName: String(form.get("supplier")).trim() || undefined,
         reference: String(form.get("reference")).trim() || undefined,
         receivedAt: String(form.get("receivedAt")),
+        idempotencyKey,
         lines: parsed,
       });
       const units = parsed.reduce((s, l) => s + l.quantity, 0);
       setMessage({ ok: true, text: `Received ${units} units on ${parsed.length} line(s)` });
       setLines([blank()]);
+      setIdempotencyKey(crypto.randomUUID()); // the next receipt is a new one
       formEl.reset();
       router.refresh();
     } catch (err) {

@@ -72,7 +72,7 @@ export async function matchLines(
       SELECT l.n,
              (SELECT a.product_id FROM supplier_aliases a JOIN products p ON p.id = a.product_id
                WHERE a.user_id = ${userId} AND p.user_id = ${userId} AND p.is_active
-                 AND a.supplier_id = (SELECT id FROM sup) AND a.raw_text = l.norm) AS alias_id,
+                 AND a.supplier_id IS NOT DISTINCT FROM (SELECT id FROM sup) AND a.raw_text = l.norm) AS alias_id,
              (SELECT p.id FROM products p
                WHERE p.user_id = ${userId} AND p.is_active AND l.code IS NOT NULL
                  AND lower(p.sku) = lower(btrim(l.code))) AS sku_id,
@@ -133,7 +133,25 @@ export async function getDraft(userId: string, draftId: string) {
     .select()
     .from(receipts)
     .where(and(eq(receipts.id, draftId), eq(receipts.userId, userId), eq(receipts.status, "draft")));
-  return row ? { ...row, extraction: row.extraction as DraftDocument } : null;
+  if (!row) return null;
+  const extraction = row.extraction as DraftDocument;
+  return { ...row, extraction, duplicateOf: await findConfirmedDuplicate(userId, extraction.supplierName, row.reference) };
+}
+
+/**
+ * A confirmed receipt from the same supplier (by name, case-insensitive) with
+ * the same reference, for the review screen to warn about before anyone
+ * clicks. receiveGoods enforces the same rule on the values actually submitted.
+ */
+export async function findConfirmedDuplicate(userId: string, supplierName: string | null, reference: string | null) {
+  if (!supplierName?.trim() || !reference?.trim()) return null;
+  const { rows } = await db.execute<{ id: string; confirmed_at: Date }>(sql`
+    SELECT r.id, r.confirmed_at FROM receipts r JOIN suppliers s ON s.id = r.supplier_id
+     WHERE r.user_id = ${userId} AND s.user_id = ${userId} AND r.status = 'confirmed'
+       AND lower(s.name) = lower(${supplierName.trim()})
+       AND upper(btrim(r.reference)) = ${reference.trim().toUpperCase()}
+     ORDER BY r.confirmed_at DESC LIMIT 1`);
+  return rows[0] ? { id: rows[0].id, confirmedAt: new Date(rows[0].confirmed_at) } : null;
 }
 
 export async function listDrafts(userId: string) {
