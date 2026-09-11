@@ -8,6 +8,7 @@
     "start": "next start",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
+    "typecheck": "tsc --noEmit",
     "verify:phase1": "tsx scripts/verify-phase1.ts --reset",
     "test": "tsx --conditions=react-server --test --test-concurrency=1 src/**/*.test.ts",
     "test:live": "tsx --conditions=react-server --test src/lib/extraction.live.ts",

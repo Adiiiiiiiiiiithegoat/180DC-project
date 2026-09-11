@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # CI's database is this service container: a fresh, empty postgres:16 that
+    # exists only for the life of the job. There is no DATABASE_URL anywhere in
+    # this workflow that points anywhere else, so CI structurally cannot reach
+    # the production database — not "won't", cannot, because it is never told
+    # its address.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      # Dummy values, never real secrets. Nothing here is added to GitHub
+      # secrets, and nothing needs to be: the database above is disposable and
+      # the app talks to no external service during typecheck or npm test.
+      BETTER_AUTH_SECRET: ci-dummy-better-auth-secret-do-not-use-in-production
+      BETTER_AUTH_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # pg_trgm is enabled by the first migration (drizzle/0000_extensions.sql)
+      # itself, so running migrations is the "enable pg_trgm" step.
+      - name: Run migrations
+        run: npm run db:migrate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # No lint step: this project has no ESLint dependency or config, and
+      # Next.js 16 removed `next lint` outright. There is nothing installed to
+      # run here. Add eslint + a config first if you want lint in CI.
+      - name: Test
+        run: npm test # src/**/*.test.ts only; test:live (calls the real Groq API) is a separate script and never runs here.
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history, not just this commit — gitleaks needs it to see anything ever committed.
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # auto-provided per run by GitHub, not a secret we add.
