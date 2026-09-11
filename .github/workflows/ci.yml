@@ -51,6 +51,13 @@ jobs:
       - name: Run migrations
         run: npm run db:migrate
 
+      # tsc alone doesn't know about Next.js's generated route/page/layout
+      # types (RouteContext, PageProps, LayoutProps) — `next dev`/`next build`
+      # normally produce them as a side effect. A fresh checkout has neither,
+      # so generate them explicitly first.
+      - name: Generate Next.js types
+        run: npx next typegen
+
       - name: Typecheck
         run: npm run typecheck
 
