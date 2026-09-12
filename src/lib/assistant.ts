@@ -108,6 +108,24 @@ function omit<T extends object, K extends keyof T>(o: T, ...keys: K[]): Omit<T, 
 /** The assistant's default for getProductPerformance when the model gives no limit. */
 const PERFORMANCE_LIMIT = 10;
 
+/**
+ * One structured log line per tool call: name, duration, success/failure, userId.
+ * Never the input or the result — those can carry prices, quantities, prompt-derived text.
+ */
+function logged<In, Out>(userId: string, toolName: string, execute: (input: In) => Promise<Out>) {
+  return async (input: In) => {
+    const startedAt = Date.now();
+    try {
+      const result = await execute(input);
+      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: true, userId }));
+      return result;
+    } catch (e) {
+      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: false, userId }));
+      throw e;
+    }
+  };
+}
+
 /** The eight tools, bound to one account. `userId` is captured here and nowhere else. */
 export function assistantTools(userId: string) {
   return {
@@ -120,10 +138,10 @@ export function assistantTools(userId: string) {
         "user which they mean instead of guessing. Do not use it to list products or find low stock " +
         "(use getInventoryStatus) or for sales figures (use getProductPerformance).",
       inputSchema: findProductInputSchema,
-      execute: async (input) => {
+      execute: logged(userId, "findProduct", async (input) => {
         const r = await findProduct(userId, input);
         return forModel({ ...r, candidates: r.candidates.map((c) => omit(c, "category")) });
-      },
+      }),
     }),
 
     getInventoryStatus: tool({
@@ -136,7 +154,7 @@ export function assistantTools(userId: string) {
         "about sales: for how fast things sell, when they will run out, or how much to order, use " +
         "getReorderSuggestions.",
       inputSchema: inventoryStatusInputSchema,
-      execute: async (input) => {
+      execute: logged(userId, "getInventoryStatus", async (input) => {
         const r = await getInventoryStatus(userId, input);
         return forModel({
           // Said here, not only in the prompt: the model otherwise dates stock like a sales window.
@@ -144,7 +162,7 @@ export function assistantTools(userId: string) {
           ...r,
           items: r.items.map((p) => omit(p, "id", "sku", "category", "unitPricePaise", "averageCostPaise")),
         });
-      },
+      }),
     }),
 
     getSalesSummary: tool({
@@ -160,7 +178,7 @@ export function assistantTools(userId: string) {
         "products, and any promotions, behind the change. Windows end yesterday, the last complete " +
         "day; today's trading is included only with includeToday, for questions about today.",
       inputSchema: salesSummaryInputSchema,
-      execute: async (input) => forModel(await getSalesSummary(userId, input)),
+      execute: logged(userId, "getSalesSummary", async (input) => forModel(await getSalesSummary(userId, input))),
     }),
 
     getSalesTimeSeries: tool({
@@ -172,10 +190,10 @@ export function assistantTools(userId: string) {
         "partial weeks. For one total over a period use getSalesSummary instead; for products use " +
         "getProductPerformance.",
       inputSchema: salesTimeSeriesInputSchema,
-      execute: async (input) => {
+      execute: logged(userId, "getSalesTimeSeries", async (input) => {
         const r = await getSalesTimeSeries(userId, input);
         return forModel({ ...r, points: r.points.map((p) => omit(p, "end")) });
-      },
+      }),
     }),
 
     getProductPerformance: tool({
@@ -191,7 +209,7 @@ export function assistantTools(userId: string) {
         "endDate; sortBy biggest_decline or biggest_growth, with a limit of about 5). Returns the first " +
         `${PERFORMANCE_LIMIT} products unless limit says otherwise.`,
       inputSchema: productPerformanceInputSchema,
-      execute: async (input) => {
+      execute: logged(userId, "getProductPerformance", async (input) => {
         const r = await getProductPerformance(userId, { ...input, limit: input.limit ?? PERFORMANCE_LIMIT });
         return forModel({
           ...r,
@@ -200,7 +218,7 @@ export function assistantTools(userId: string) {
             omit(p, "id", "isActive", "previousUnits", "previousUnitsPerDay", "freeUnits", "discountsGivenPaise", "livePromotion"),
           ),
         });
-      },
+      }),
     }),
 
     getReorderSuggestions: tool({
@@ -214,7 +232,7 @@ export function assistantTools(userId: string) {
         "one. Use for: what should I reorder, how much should I order, when will X run out, and " +
         "before proposing a new reorder point. Explain the method from the inputs when you give a number.",
       inputSchema: reorderSuggestionsInputSchema,
-      execute: async ({ include }) => {
+      execute: logged(userId, "getReorderSuggestions", async ({ include }) => {
         const r = await getReorderSuggestions(userId);
         const shown = include === "all" ? r.products : r.products.filter((p) => p.status !== "ok");
         return forModel({
@@ -226,7 +244,7 @@ export function assistantTools(userId: string) {
               : omit(p, "id", "sku", "historyDays"),
           ),
         });
-      },
+      }),
     }),
 
     getStockHistory: tool({
@@ -237,7 +255,7 @@ export function assistantTools(userId: string) {
         "there adjustments. Needs the product id from findProduct. Not for sales totals or trends " +
         "(use getProductPerformance or getSalesTimeSeries).",
       inputSchema: stockHistoryInputSchema,
-      execute: async (input) => {
+      execute: logged(userId, "getStockHistory", async (input) => {
         const r = await getStockHistory(userId, input);
         return forModel({
           ...r,
@@ -245,7 +263,7 @@ export function assistantTools(userId: string) {
           // Most days only sell: a zero received / returned / adjusted is noise.
           days: r.days.map((d) => Object.fromEntries(Object.entries(d).filter(([k, v]) => k === "closing" || v !== 0))),
         });
-      },
+      }),
     }),
 
     updateProductSettings: tool({
@@ -260,7 +278,7 @@ export function assistantTools(userId: string) {
         "Receive and Sale screens.",
       inputSchema: updateProductSettingsSchema,
       needsApproval: true,
-      execute: async (input) => {
+      execute: logged(userId, "updateProductSettings", async (input) => {
         const p = await updateProductSettings(userId, input);
         return forModel({
           applied: true,
@@ -269,7 +287,7 @@ export function assistantTools(userId: string) {
           unitPricePaise: p.unitPrice,
           isActive: p.isActive,
         });
-      },
+      }),
     }),
   };
 }
