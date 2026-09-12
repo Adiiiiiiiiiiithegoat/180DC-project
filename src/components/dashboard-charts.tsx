@@ -16,6 +16,12 @@ import { formatPaise } from "@/lib/money";
 
 // One series per chart, so one hue and no legend: the card title names it.
 const SERIES = "#2a78d6";
+// Revenue trend only, as the one chart accented with the brand colour —
+// read from the single definition in globals.css, not retyped here. The
+// darker shade for the line (bright green fails WCAG AA against white as a
+// graphical stroke), bright green for the low-opacity fill beneath it.
+const REVENUE_LINE = "var(--color-brand-green-dark)";
+const REVENUE_FILL = "var(--color-brand-green)";
 const GRID = "#e7e5e4"; // stone-200: recessive hairlines
 const INK_MUTED = "#78716c"; // stone-500: axis text
 
@@ -59,12 +65,12 @@ export function RevenueTrend({ weeks }: { weeks: WeekPoint[] }) {
           <Area
             type="linear"
             dataKey="revenuePaise"
-            stroke={SERIES}
+            stroke={REVENUE_LINE}
             strokeWidth={2}
-            fill={SERIES}
-            fillOpacity={0.1}
+            fill={REVENUE_FILL}
+            fillOpacity={0.12}
             dot={false}
-            activeDot={{ r: 4, fill: SERIES, stroke: "#fff", strokeWidth: 2 }}
+            activeDot={{ r: 4, fill: REVENUE_LINE, stroke: "#fff", strokeWidth: 2 }}
             isAnimationActive={false}
           />
         </AreaChart>

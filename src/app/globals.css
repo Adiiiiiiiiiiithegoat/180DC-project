@@ -3,6 +3,18 @@
 @theme inline {
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /*
+   * Brand accents (180DC), the only place these hex values appear. Two
+   * shades because they land very differently on WCAG AA: brand-green-dark
+   * (#2E7D1F) passes 4.5:1 for text/UI against white; brand-green (#5CB338)
+   * does not (~2.6:1) — it is decorative-only (a chart fill), never text,
+   * a focus ring, or anything else read for meaning. brand-ink is available,
+   * unused for now — the light theme's backgrounds are not being repainted.
+   */
+  --color-brand-green: #5cb338;
+  --color-brand-green-dark: #2e7d1f;
+  --color-brand-ink: #1a1a1a;
 }
 
 body {
