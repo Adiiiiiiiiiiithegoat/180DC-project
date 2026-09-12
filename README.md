@@ -43,3 +43,14 @@ user who has traded owns products that the ledger still references, so the
 account cannot be deleted out from under its own history either. For the same
 reason the seed never deletes a demo account; `npm run seed` rebuilds the
 database from migrations instead.
+
+### What CI does not cover
+
+`src/lib/analytics.test.ts` runs with `npm test` locally but not in CI
+(`.github/workflows/ci.yml`). It is a fixed-value oracle test: its expected
+figures are hardcoded from one specific `npm run seed` run against the
+hand-seeded Neon `local` branch, pinned to that seed's date. CI's database is
+a fresh, empty `postgres:16` container every run, which can never have that
+seed in it — and reseeding it in CI wouldn't help, since the seed always
+covers "90 days ending yesterday" and can never again reproduce this test's
+pinned date and figures. Every other test file runs in both places.

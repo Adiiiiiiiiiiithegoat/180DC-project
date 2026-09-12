@@ -64,8 +64,26 @@ jobs:
       # No lint step: this project has no ESLint dependency or config, and
       # Next.js 16 removed `next lint` outright. There is nothing installed to
       # run here. Add eslint + a config first if you want lint in CI.
+      #
+      # Runs every src/**/*.test.ts except analytics.test.ts by literal
+      # filename, so a new test file is included by default without this
+      # workflow needing to know it exists. analytics.test.ts is excluded
+      # deliberately, not accidentally skipped: by its own header comment it
+      # is a "Phase 6 oracle test" whose expected figures are hardcoded from
+      # one specific `npm run seed` run against the hand-seeded Neon `local`
+      # branch on a specific date. A fresh, empty CI database can never
+      # satisfy it, and reseeding it here wouldn't help either — the seed
+      # always covers "90 days ending yesterday", which will never again line
+      # up with this test's pinned date and figures. `npm test` (no "npm run",
+      # so the local default) still runs it; only CI excludes it. test:live
+      # (calls the real Groq API) is a separate script and never runs here.
       - name: Test
-        run: npm test # src/**/*.test.ts only; test:live (calls the real Groq API) is a separate script and never runs here.
+        run: |
+          files=$(find src -type f -name '*.test.ts' ! -name 'analytics.test.ts' | sort)
+          echo "CI runs:"
+          printf '  %s\n' $files
+          echo "CI skips: src/lib/analytics.test.ts (oracle test pinned to the seeded local branch — see comment above)"
+          npx tsx --conditions=react-server --test --test-concurrency=1 $files
 
   secret-scan:
     runs-on: ubuntu-latest
