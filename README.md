@@ -96,10 +96,18 @@ Better Auth · Vercel AI SDK 6 · Recharts.
 ### Three defences the brief specifically asks about
 
 1. **Every query filters `user_id` in the SQL `WHERE` clause**, not in
-   application code after the fact. There is no code path that fetches
-   "everything" and filters client-side; a query that forgot the filter
-   would leak across accounts, so it's enforced at the query, not the
-   caller.
+   application code after the fact — audited exhaustively, not spot-checked:
+   every `.where()`/raw-SQL query in `src/lib/queries.ts`, `services.ts`,
+   `analytics.ts`, and `drafts.ts`, plus every API route handler, checked
+   individually. Zero exceptions. Two `sale_lines` subqueries in
+   `analytics.ts` don't re-filter by `user_id` themselves — they're
+   correlated to `sale_id = sa.id` against an outer `sales` row already
+   filtered by `user_id`, so they inherit the scope rather than needing
+   their own check. `assistant.ts` runs no query directly at all: every
+   tool delegates to the functions above, with `userId` bound by closure.
+   Every route handler and server action derives `userId` from
+   `sessionUserId`/`requireUserId` (`src/lib/session.ts`), which read only
+   `auth.api.getSession()` — never a request body, query param, or header.
 2. **Auth is checked inside each route handler and server action, never in
    middleware.** [CVE-2025-29927](https://github.com/vercel/next.js/security/advisories/GHSA-f82v-jwr5-mffw)
    showed middleware-only session protection in Next.js is bypassable by
@@ -454,18 +462,17 @@ Vercel environment variables, production-only, never committed.
 
 ## AI coding tools used and how
 
-Built with **Claude Code**, following the phased plan in `BUILD_PROMPT.md`:
-Phases 1–3 (schema, pricing, the service layer) with Opus 5, Phases 4–7
-(web app, deploy, the assistant, receipt upload) with Sonnet 5, each phase
-gated on its own stated verification before the next began — the human
-reviewed and explicitly approved every phase rather than letting them run
-end to end. Phase 8 (this session, also Sonnet 5) added CI, ops, and a
+Built with **Claude Code** throughout, under the phased plan in
+`BUILD_PROMPT.md`: seven phases (schema and pricing, the service layer,
+the web app, deploy, the assistant, receipt upload, production readiness),
+each gated on its own stated verification before the next began — the
+human reviewed and explicitly approved every phase rather than letting
+them run end to end. An eighth phase (this session) added CI, ops, and a
 security hardening pass directly against the live app: the confirm-time
-identity fix in [Security](#security) was found and fixed in an
-interactive session, including a live reproduction, a targeted correction
-via the app's own `adjustStock` function for the one accidental production
-write it caused, and regression tests — not part of the original seven
-phases.
+identity fix in [Security](#security) was found and fixed interactively,
+including a live reproduction, a targeted correction via the app's own
+`adjustStock` function for the one accidental production write it caused,
+and regression tests — not part of the original seven phases.
 
 ## Limitations and deliberate scope cuts
 
