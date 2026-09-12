@@ -190,27 +190,59 @@ async function receiveGoodsOnce(
     let trustedSupplierName: string | null = null;
     if (options.draftId) {
       draftId = uuid.parse(options.draftId);
+      // Not found here (wrong user, wrong id, or no longer in 'draft' status —
+      // already confirmed, most likely) is not this code's problem to report:
+      // there is nothing genuine to trust either way, so every check below is
+      // skipped and the real UPDATE further down produces the right 404/409.
       const [existingDraft] = await tx
         .select({ reference: receipts.reference, extraction: receipts.extraction })
         .from(receipts)
         .where(and(eq(receipts.id, draftId), eq(receipts.userId, userId), eq(receipts.status, "draft")));
-      trustedReference = existingDraft?.reference?.trim() || null;
-      trustedSupplierName =
-        (existingDraft?.extraction as { supplierName?: string | null } | undefined)?.supplierName?.trim() || null;
 
-      const inputReference = input.reference?.trim() || null;
-      if (trustedReference && inputReference && inputReference.toUpperCase() !== trustedReference.toUpperCase()) {
-        throw new ServiceError(
-          "conflict",
-          "this draft's reference does not match what was read from the document; discard it and re-upload if the note itself has changed",
-        );
-      }
-      const inputSupplierName = input.supplierName?.trim() || null;
-      if (trustedSupplierName && inputSupplierName && inputSupplierName.toLowerCase() !== trustedSupplierName.toLowerCase()) {
-        throw new ServiceError(
-          "conflict",
-          "this draft's supplier does not match what was read from the document; discard it and re-upload if the note itself has changed",
-        );
+      if (existingDraft) {
+        trustedReference = existingDraft.reference?.trim() || null;
+        trustedSupplierName =
+          (existingDraft.extraction as { supplierName?: string | null }).supplierName?.trim() || null;
+
+        const inputReference = input.reference?.trim() || null;
+        if (trustedReference && inputReference && inputReference.toUpperCase() !== trustedReference.toUpperCase()) {
+          throw new ServiceError(
+            "conflict",
+            "this draft's reference does not match what was read from the document; discard it and re-upload if the note itself has changed",
+          );
+        }
+        const inputSupplierName = input.supplierName?.trim() || null;
+        if (trustedSupplierName && inputSupplierName && inputSupplierName.toLowerCase() !== trustedSupplierName.toLowerCase()) {
+          throw new ServiceError(
+            "conflict",
+            "this draft's supplier does not match what was read from the document; discard it and re-upload if the note itself has changed",
+          );
+        }
+
+        // Same principle, per line: the document's printed text is not the
+        // payload's to invent. It is stored on the line and, resolved or not,
+        // taught as a supplier alias — a fabricated one would poison future
+        // matching, not just this receipt. Absent is fine (nothing to check,
+        // nothing gets taught for that line, same as it always has); present
+        // and not one of the document's own lines is not — checked as a
+        // multiset, since a document can print the same text on two lines.
+        const trustedRawTexts = new Map<string, number>();
+        for (const l of (existingDraft.extraction as { lines?: { rawText?: string | null }[] }).lines ?? []) {
+          const t = l.rawText?.trim();
+          if (t) trustedRawTexts.set(t, (trustedRawTexts.get(t) ?? 0) + 1);
+        }
+        for (const line of input.lines) {
+          const t = line.rawText?.trim();
+          if (!t) continue;
+          const remaining = trustedRawTexts.get(t) ?? 0;
+          if (remaining <= 0) {
+            throw new ServiceError(
+              "conflict",
+              "a line's text does not match what was read from the document; discard this draft and re-upload if the note itself has changed",
+            );
+          }
+          trustedRawTexts.set(t, remaining - 1);
+        }
       }
     }
     const effectiveReference = options.draftId ? (trustedReference ?? input.reference?.trim() ?? null) : (input.reference ?? null);

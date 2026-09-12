@@ -426,6 +426,30 @@ test("a confirm payload cannot change a draft's reference or supplier to a diffe
   assert.equal((await inventory(userId)).confirmed, before.confirmed + 1);
 });
 
+test("a confirm payload cannot invent a line's document text either — fabricated or absent", async () => {
+  const { userId, id } = await newShop();
+  const draft = await createDraft(userId, kaveri());
+  const before = await inventory(userId);
+
+  // Basmati Rice is matched by SKU already; even a resolved line's printed
+  // text is not the payload's to rewrite.
+  const fabricated = kaveriLines(id).map((l, i) => (i === 0 ? { ...l, rawText: "Something the note never said" } : l));
+  await assert.rejects(
+    receiveGoods(userId, { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", lines: fabricated }, { draftId: draft.id }),
+    (e) => e instanceof ServiceError && e.code === "conflict" && /line's text does not match/.test(e.message),
+  );
+  assert.deepEqual(await inventory(userId), before, "refused, nothing moved");
+
+  // Absent is fine — unchanged from before: nothing to check, and no alias
+  // taught for that line, same as always.
+  const absent = kaveriLines(id).map((l, i) => (i === 0 ? { ...l, rawText: undefined } : l));
+  await receiveGoods(userId, { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", lines: absent }, { draftId: draft.id });
+  assert.equal((await inventory(userId)).confirmed, before.confirmed + 1);
+  const [riceAlias] = await db.select().from(supplierAliases)
+    .where(and(eq(supplierAliases.userId, userId), eq(supplierAliases.rawText, "BASMATI RICE 1KG")));
+  assert.equal(riceAlias, undefined, "no alias taught when the line's text was left out");
+});
+
 test("two drafts of the same note confirmed at the same moment: the second still sees the first", async () => {
   const { userId, id } = await newShop();
   const [a, b] = [await createDraft(userId, kaveri()), await createDraft(userId, kaveri())];
@@ -453,8 +477,16 @@ test("supplier aliases: one per text even with no supplier, and text is compared
     (e) => isUniqueViolation(e, "supplier_aliases_key"),
   );
 
-  // A note with no supplier still teaches, and the lesson survives case and spacing.
-  const draft = await createDraft(userId, kaveri({ supplierName: null }));
+  // A note with no supplier still teaches, and the lesson survives case and
+  // spacing. Its own extraction must actually say this text now that a
+  // confirm payload can no longer invent line text the document never had.
+  const draft = await createDraft(
+    userId,
+    kaveri({
+      supplierName: null,
+      lines: [{ rawText: "Fortune Oil 1LTR", code: null, quantity: 1, unitCostPaise: 15800, amountPaise: 15800, unsure: [] }],
+    }),
+  );
   await receiveGoods(
     userId,
     { lines: [{ productId: id["STP-OIL-1L"], quantity: 1, unitCost: 15800, rawText: "Fortune Oil 1LTR" }], acceptTotalMismatch: true },

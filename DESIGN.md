@@ -166,6 +166,16 @@ Confirming a draft runs the same code path as manual entry.
   (user, supplier, reference) makes two drafts of one note confirmed at the
   same moment take turns. Both a supplier and a reference are needed to call
   two notes the same.
+- **Identity at confirm time comes from the draft, not the payload.** The
+  supplier, the reference, and each line's printed text are read from the
+  draft's own stored row and extraction before anything can overwrite them.
+  The confirm payload may fill in what the document genuinely lacked, but a
+  value that disagrees with what the draft already had is refused outright,
+  never silently substituted — only the product each line resolves to, and
+  its quantity and cost, are the payload's to set. This surfaced because the
+  duplicate check above originally trusted the payload's supplier and
+  reference to decide whether to even run: a request that simply omitted
+  both skipped the check and received the goods, unconditionally.
 - **Aliases** are stored and looked up normalised (trimmed, whitespace
   collapsed, uppercase), unique on (user, supplier, text) `NULLS NOT DISTINCT`,
   so a note with no supplier still learns one alias per text.
