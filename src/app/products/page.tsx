@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { InfoTip } from "@/components/info-tip";
 import { ProductForm } from "@/components/product-form";
 import { card, link, td, th } from "@/components/ui";
 import { formatPaise } from "@/lib/money";
@@ -32,9 +33,24 @@ export default async function ProductsPage({ searchParams }: PageProps<"/product
                 <th className={th}>SKU</th>
                 <th className={th}>Category</th>
                 <th className={`${th} text-right`}>Price</th>
-                <th className={`${th} text-right`}>Avg cost</th>
-                <th className={`${th} text-right`}>On hand</th>
-                <th className={`${th} text-right`}>Reorder at</th>
+                <th className={`${th} text-right`}>
+                  Avg cost
+                  <InfoTip
+                    label="Average cost"
+                    text="The average price you've paid for this product's stock, weighted by how much arrived at each price — so a big cheap delivery counts for more than a small pricey one. Used to work out margin."
+                  />
+                </th>
+                <th className={`${th} text-right`}>
+                  On hand
+                  <InfoTip label="On hand" text="How many units of this product are physically on the shelf right now." />
+                </th>
+                <th className={`${th} text-right`}>
+                  Reorder at
+                  <InfoTip
+                    label="Reorder at"
+                    text="The stock level you've chosen as your own cue to reorder this product. You can change it any time — it doesn't update itself."
+                  />
+                </th>
               </tr>
             </thead>
             <tbody>
