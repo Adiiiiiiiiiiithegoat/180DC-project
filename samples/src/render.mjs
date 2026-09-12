@@ -26,6 +26,9 @@ const pdf = (html, out) => edge(`--print-to-pdf=${out}`, "--no-pdf-header-footer
 // Demo samples: three layouts.
 pdf("kaveri-wholesale.html", join(demo, "kaveri-wholesale-DN-4471.pdf"));
 pdf("kaveri-wholesale-2.html", join(demo, "kaveri-wholesale-DN-4502.pdf"));
+pdf("kaveri-wholesale-3.html", join(demo, "kaveri-wholesale-DN-4530.pdf"));
+pdf("kaveri-wholesale-4.html", join(demo, "kaveri-wholesale-DN-4560.pdf"));
+pdf("kaveri-wholesale-5.html", join(demo, "kaveri-wholesale-DN-4575.pdf"));
 await sharp(shot("sharma-traders.html", 920, 640))
   .rotate(1.2, { background: "#6b5b4b" }).blur(0.8).modulate({ brightness: 0.93, saturation: 0.85 })
   .jpeg({ quality: 58 }).toFile(join(demo, "sharma-traders-challan.jpg"));

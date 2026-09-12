@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { RevenueTrend, TopProducts } from "@/components/dashboard-charts";
-import { card, td, th } from "@/components/ui";
+import { card, link, td, th } from "@/components/ui";
 import {
   getInventoryStatus,
   getProductPerformance,
@@ -136,7 +136,7 @@ export default async function DashboardPage() {
                     {group.items.map((p) => (
                       <tr key={p.id} className="border-b border-stone-100">
                         <td className={td}>
-                          <Link href={`/products/${p.id}`} className="hover:underline">{p.name}</Link>
+                          <Link href={`/products/${p.id}`} className={link}>{p.name}</Link>
                         </td>
                         <td className={`${td} text-right tabular-nums text-stone-500`}>{p.previousUnitsPerDay} → </td>
                         <td className={`${td} text-right tabular-nums font-medium`}>{p.unitsPerDay}/day</td>
@@ -181,7 +181,7 @@ export default async function DashboardPage() {
                 {attention.map((p) => (
                   <tr key={p.id} className="border-b border-stone-100">
                     <td className={td}>
-                      <Link href={`/products/${p.id}`} className="font-medium hover:underline">{p.name}</Link>
+                      <Link href={`/products/${p.id}`} className={`font-medium ${link}`}>{p.name}</Link>
                     </td>
                     <td className={`${td} text-right tabular-nums`}>{p.inputs?.onHand}</td>
                     <td className={`${td} text-right tabular-nums`}>{p.inputs?.meanDailyUnits}</td>

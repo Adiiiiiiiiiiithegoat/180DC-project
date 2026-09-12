@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ProductForm } from "@/components/product-form";
-import { card, td, th } from "@/components/ui";
+import { card, link, td, th } from "@/components/ui";
 import { formatPaise } from "@/lib/money";
 import { listProducts } from "@/lib/queries";
 import { requireUserId } from "@/lib/session";
@@ -20,7 +20,7 @@ export default async function ProductsPage({ searchParams }: PageProps<"/product
       <section className={card}>
         <div className="mb-3 flex items-center justify-between">
           <h1 className="text-lg font-semibold">Products</h1>
-          <Link href={showAll ? "/products" : "/products?show=all"} className="text-sm underline">
+          <Link href={showAll ? "/products" : "/products?show=all"} className={`text-sm ${link}`}>
             {showAll ? "Hide deactivated" : "Show deactivated"}
           </Link>
         </div>
@@ -47,7 +47,7 @@ export default async function ProductsPage({ searchParams }: PageProps<"/product
                     className={`border-b border-stone-100 ${p.isActive ? "" : "text-stone-400"}`}
                   >
                     <td className={td}>
-                      <Link href={`/products/${p.id}`} className="font-medium underline-offset-2 hover:underline">
+                      <Link href={`/products/${p.id}`} className={`font-medium ${link}`}>
                         {p.name}
                       </Link>
                       {!p.isActive && <span className="ml-2 text-xs">(deactivated)</span>}

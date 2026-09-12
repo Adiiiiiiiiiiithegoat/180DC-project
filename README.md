@@ -60,3 +60,13 @@ pinned date and figures. Every other test file runs in both places.
 Dev, local and production are Neon branches of the same project sharing one
 role's password, so the hostname is the only thing separating them — not a
 credential; separate roles per environment would be the production answer.
+
+### Reseeding is not a maintenance tool
+
+`npm run seed --reset` is a full schema rebuild — it drops and recreates every
+table, is not resumable if it fails partway through the 90-day seeding loop,
+and has no partial-reset option (a user who has traded cannot be deleted out
+from under their own ledger, so there is no "just the demo account" version).
+It is meant to build a fresh environment once, not to correct drift on a live
+production account. Production drift is corrected through the app's own
+screens instead.

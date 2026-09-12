@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
+import { NavLink } from "./nav-link";
 import { SignOutButton } from "./sign-out-button";
 
 /**
@@ -17,11 +18,11 @@ export async function Nav() {
         </Link>
         {session && (
           <>
-            <Link href="/dashboard" className="text-stone-600 hover:text-stone-900">Dashboard</Link>
-            <Link href="/assistant" className="text-stone-600 hover:text-stone-900">Assistant</Link>
-            <Link href="/sale" className="text-stone-600 hover:text-stone-900">Sale</Link>
-            <Link href="/receive" className="text-stone-600 hover:text-stone-900">Receive</Link>
-            <Link href="/products" className="text-stone-600 hover:text-stone-900">Products</Link>
+            <NavLink href="/dashboard">Dashboard</NavLink>
+            <NavLink href="/assistant">Assistant</NavLink>
+            <NavLink href="/sale">Sale</NavLink>
+            <NavLink href="/receive">Receive</NavLink>
+            <NavLink href="/products">Products</NavLink>
             <span className="ml-auto text-stone-500">{session.user.email}</span>
             <SignOutButton />
           </>

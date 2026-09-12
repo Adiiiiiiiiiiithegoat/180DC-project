@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ReceiveForm } from "@/components/receive-form";
-import { card } from "@/components/ui";
+import { card, link } from "@/components/ui";
 import { UploadNote } from "@/components/upload-note";
 import { listDrafts } from "@/lib/drafts";
 import { listProducts, listSuppliers } from "@/lib/queries";
@@ -28,7 +28,7 @@ export default async function ReceivePage() {
             <ul className="flex flex-col gap-1 text-sm">
               {drafts.map((d) => (
                 <li key={d.id}>
-                  <Link href={`/receive/drafts/${d.id}`} className="hover:underline">
+                  <Link href={`/receive/drafts/${d.id}`} className={link}>
                     {d.supplierName ?? "Unknown supplier"} · {d.lines} line{d.lines === 1 ? "" : "s"} · uploaded{" "}
                     {d.createdAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" })}
                   </Link>

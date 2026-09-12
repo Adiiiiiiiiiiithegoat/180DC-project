@@ -49,6 +49,7 @@ walkthrough/
 # not part of the app: agent skills installed by `neon skills`, and unrelated coursework
 .claude/skills/
 skills-lock.json
+.tmp-screenshots/
 *.pdf
 # ...except the sample delivery notes and test documents, which the demo and the tests need
 !samples/**/*.pdf
