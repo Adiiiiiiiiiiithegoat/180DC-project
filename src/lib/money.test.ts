@@ -14,7 +14,7 @@ test("parseRupees turns typed rupees into exact paise, never via a float", () =>
 });
 
 test("formatPaise renders Indian grouping without touching the stored integer", () => {
-  assert.equal(formatPaise(8005), "₹80.06"); // deliberately wrong, to prove CI goes red (see BUILD_PROMPT.md phase 8a step 8)
+  assert.equal(formatPaise(8005), "₹80.05");
   assert.equal(formatPaise(12345678), "₹1,23,456.78");
   assert.equal(formatPaise(0), "₹0.00");
   assert.equal(formatPaise(-2500), "-₹25.00");
