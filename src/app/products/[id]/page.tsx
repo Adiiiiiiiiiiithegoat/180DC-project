@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { ActiveToggle } from "@/components/active-toggle";
+import { InfoTip } from "@/components/info-tip";
 import { ProductForm } from "@/components/product-form";
 import { PromotionForm } from "@/components/promotion-form";
 import { card, td, th } from "@/components/ui";
@@ -35,15 +36,21 @@ export default async function ProductPage({ params }: PageProps<"/products/[id]"
           <span className="font-mono text-xs text-stone-500">{product.sku}</span>
           <span className="text-sm">
             On hand <strong data-testid="on-hand" className="tabular-nums">{product.quantityOnHand}</strong>
+            <InfoTip label="On hand" text="How many units of this product are physically on the shelf right now." />
           </span>
           <span className="text-sm">
             Avg cost <strong className="tabular-nums">{formatPaise(product.averageCost)}</strong>
+            <InfoTip
+              label="Average cost"
+              text="The average price you've paid for this product's stock, weighted by how much arrived at each price — so a big cheap delivery counts for more than a small pricey one. Used to work out margin."
+            />
           </span>
           <span className="text-sm">
             Stock value{" "}
             <strong className="tabular-nums">
               {formatPaise(product.quantityOnHand * product.averageCost)}
             </strong>
+            <InfoTip label="Stock value" text="What this product's stock currently on the shelf cost you: units on hand × average cost." />
           </span>
           <span className="ml-auto">
             <ActiveToggle

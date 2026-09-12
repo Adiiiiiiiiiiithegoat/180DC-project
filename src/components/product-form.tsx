@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api } from "@/lib/api-client";
 import { paiseToInput, parseRupees } from "@/lib/money";
+import { InfoTip } from "./info-tip";
 import { button, input, label } from "./ui";
 
 type Initial = {
@@ -82,7 +83,13 @@ export function ProductForm({ initial }: { initial?: Initial }) {
         />
       </label>
       <label className={label}>
-        Reorder point
+        <span className="flex items-center">
+          Reorder point
+          <InfoTip
+            label="Reorder point"
+            text="The stock level you choose as your own cue to reorder this product. It doesn't update itself — you set it."
+          />
+        </span>
         <input
           name="reorderPoint"
           type="number"
@@ -93,7 +100,13 @@ export function ProductForm({ initial }: { initial?: Initial }) {
         />
       </label>
       <label className={label}>
-        Lead time (days)
+        <span className="flex items-center">
+          Lead time (days)
+          <InfoTip
+            label="Lead time"
+            text="How many days it takes from placing an order with this supplier to the stock arriving. Used to work out the suggested reorder point."
+          />
+        </span>
         <input
           name="leadTimeDays"
           type="number"
