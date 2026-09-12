@@ -245,7 +245,10 @@ async function receiveGoodsOnce(
       // The same supplier's note with the same reference, already received:
       // most likely the same paper uploaded twice. The advisory lock makes two
       // drafts of one note confirmed at once take turns, so the second sees the
-      // first. Both a supplier and a reference are needed to call it the same.
+      // first. Both a supplier and a reference are needed to call it the same —
+      // but without both, we cannot rule out a duplicate either, so a missing
+      // one fails closed rather than skipping the check: it demands the same
+      // acknowledgement a genuine duplicate would, instead of quietly confirming.
       const reference = input.reference?.trim();
       if (supplierId && reference) {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`receipt:${userId}:${supplierId}:${reference.toUpperCase()}`}))`);
@@ -269,6 +272,11 @@ async function receiveGoodsOnce(
             { duplicateOf: duplicate.id, duplicateConfirmedAt: duplicate.confirmedAt },
           );
         }
+      } else if (!input.acceptDuplicate) {
+        throw new ServiceError(
+          "conflict",
+          "supplier and reference are both needed to check this is not a duplicate delivery; add both, or accept to receive it without that check",
+        );
       }
 
       // Section 3: the document's stated total against what is being confirmed.
