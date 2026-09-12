@@ -54,3 +54,9 @@ a fresh, empty `postgres:16` container every run, which can never have that
 seed in it — and reseeding it in CI wouldn't help, since the seed always
 covers "90 days ending yesterday" and can never again reproduce this test's
 pinned date and figures. Every other test file runs in both places.
+
+### Environment separation
+
+Dev, local and production are Neon branches of the same project sharing one
+role's password, so the hostname is the only thing separating them — not a
+credential; separate roles per environment would be the production answer.
