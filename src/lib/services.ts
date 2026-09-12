@@ -178,17 +178,61 @@ async function receiveGoodsOnce(
     const productIds = [...new Set(input.lines.map((l) => l.productId))];
     await loadOwnedProducts(tx, userId, productIds);
 
+    // A draft's own claimed supplier and reference are its identity for the
+    // duplicate check below, read here before anything can overwrite them.
+    // The confirm payload may fill in what the document genuinely lacked,
+    // but cannot rewrite what it had: without this, a payload that quietly
+    // dropped or edited these two fields could receive the same delivery
+    // note twice under an apparently different identity. The payload is
+    // client input; the stored draft row is not.
+    let draftId: string | undefined;
+    let trustedReference: string | null = null;
+    let trustedSupplierName: string | null = null;
+    if (options.draftId) {
+      draftId = uuid.parse(options.draftId);
+      const [existingDraft] = await tx
+        .select({ reference: receipts.reference, extraction: receipts.extraction })
+        .from(receipts)
+        .where(and(eq(receipts.id, draftId), eq(receipts.userId, userId), eq(receipts.status, "draft")));
+      trustedReference = existingDraft?.reference?.trim() || null;
+      trustedSupplierName =
+        (existingDraft?.extraction as { supplierName?: string | null } | undefined)?.supplierName?.trim() || null;
+
+      const inputReference = input.reference?.trim() || null;
+      if (trustedReference && inputReference && inputReference.toUpperCase() !== trustedReference.toUpperCase()) {
+        throw new ServiceError(
+          "conflict",
+          "this draft's reference does not match what was read from the document; discard it and re-upload if the note itself has changed",
+        );
+      }
+      const inputSupplierName = input.supplierName?.trim() || null;
+      if (trustedSupplierName && inputSupplierName && inputSupplierName.toLowerCase() !== trustedSupplierName.toLowerCase()) {
+        throw new ServiceError(
+          "conflict",
+          "this draft's supplier does not match what was read from the document; discard it and re-upload if the note itself has changed",
+        );
+      }
+    }
+    const effectiveReference = options.draftId ? (trustedReference ?? input.reference?.trim() ?? null) : (input.reference ?? null);
+    const effectiveSupplierName = options.draftId ? (trustedSupplierName ?? input.supplierName) : input.supplierName;
+
     let supplierId: string | null = null;
     if (input.supplierId) {
       // A supplier id from the caller is checked for ownership like a product
       // id: the foreign key alone would happily accept someone else's supplier.
       const [owned] = await tx
-        .select({ id: suppliers.id })
+        .select({ id: suppliers.id, name: suppliers.name })
         .from(suppliers)
         .where(and(eq(suppliers.id, input.supplierId), eq(suppliers.userId, userId)));
       if (!owned) throw new ServiceError("not_found", "no such supplier for this account");
+      if (trustedSupplierName && owned.name.toLowerCase() !== trustedSupplierName.toLowerCase()) {
+        throw new ServiceError(
+          "conflict",
+          "this draft's supplier does not match what was read from the document; discard it and re-upload if the note itself has changed",
+        );
+      }
       supplierId = owned.id;
-    } else if (input.supplierName) {
+    } else if (effectiveSupplierName) {
       // Find, ignoring case — "SHARMA TRADERS" read off a note and "Sharma
       // Traders" typed by hand are one supplier — or create. The no-op update
       // is what makes RETURNING hand back the existing row on conflict.
@@ -198,13 +242,13 @@ async function receiveGoodsOnce(
       const [existing] = await tx
         .select({ id: suppliers.id })
         .from(suppliers)
-        .where(and(eq(suppliers.userId, userId), sql`lower(${suppliers.name}) = lower(${input.supplierName})`))
+        .where(and(eq(suppliers.userId, userId), sql`lower(${suppliers.name}) = lower(${effectiveSupplierName})`))
         .limit(1);
       const [supplier] = existing
         ? [existing]
         : await tx
             .insert(suppliers)
-            .values({ userId, name: input.supplierName })
+            .values({ userId, name: effectiveSupplierName })
             .onConflictDoUpdate({
               target: [suppliers.userId, suppliers.name],
               set: { name: sql`excluded.name` },
@@ -215,15 +259,14 @@ async function receiveGoodsOnce(
 
     const header = {
       supplierId,
-      reference: input.reference ?? null,
+      reference: effectiveReference,
       status: "confirmed",
       receivedAt: input.receivedAt ?? at,
       confirmedAt: at,
     };
 
     let receipt;
-    if (options.draftId) {
-      const draftId = uuid.parse(options.draftId);
+    if (draftId) {
       // A draft moved no stock; this is the moment it does. Two confirms of
       // one draft: the second UPDATE waits on the first's row lock, then
       // re-reads the row under READ COMMITTED, sees 'confirmed', matches
@@ -245,13 +288,13 @@ async function receiveGoodsOnce(
       // The same supplier's note with the same reference, already received:
       // most likely the same paper uploaded twice. The advisory lock makes two
       // drafts of one note confirmed at once take turns, so the second sees the
-      // first. Both a supplier and a reference are needed to call it the same —
-      // but without both, we cannot rule out a duplicate either, so a missing
-      // one fails closed rather than skipping the check: it demands the same
-      // acknowledgement a genuine duplicate would, instead of quietly confirming.
-      const reference = input.reference?.trim();
-      if (supplierId && reference) {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`receipt:${userId}:${supplierId}:${reference.toUpperCase()}`}))`);
+      // first. Both come from the draft's own trusted identity above, never the
+      // payload — a request that omits or edits them cannot skip this. Both a
+      // supplier and a reference are needed to call it the same; a note that
+      // genuinely has neither (or a supplier still unresolved) has nothing to
+      // check against, same as manual entry always has.
+      if (supplierId && effectiveReference) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`receipt:${userId}:${supplierId}:${effectiveReference.toUpperCase()}`}))`);
         const [duplicate] = await tx
           .select({ id: receipts.id, confirmedAt: receipts.confirmedAt })
           .from(receipts)
@@ -260,7 +303,7 @@ async function receiveGoodsOnce(
               eq(receipts.userId, userId),
               eq(receipts.supplierId, supplierId),
               eq(receipts.status, "confirmed"),
-              sql`upper(btrim(${receipts.reference})) = ${reference.toUpperCase()}`,
+              sql`upper(btrim(${receipts.reference})) = ${effectiveReference.toUpperCase()}`,
               sql`${receipts.id} <> ${draftId}`,
             ),
           )
@@ -272,11 +315,6 @@ async function receiveGoodsOnce(
             { duplicateOf: duplicate.id, duplicateConfirmedAt: duplicate.confirmedAt },
           );
         }
-      } else if (!input.acceptDuplicate) {
-        throw new ServiceError(
-          "conflict",
-          "supplier and reference are both needed to check this is not a duplicate delivery; add both, or accept to receive it without that check",
-        );
       }
 
       // Section 3: the document's stated total against what is being confirmed.

@@ -282,16 +282,14 @@ test("a document total that disagrees with its lines cannot be confirmed until a
   const draft = await createDraft(userId, doc);
   const before = await inventory(userId);
 
-  // A reference too, so this test's own concern (the total) is what's under
-  // test, not the missing-reference duplicate guard covered elsewhere.
   await assert.rejects(
-    receiveGoods(userId, { supplierName: "Sharma Traders", reference: "SHM-001", lines }, { draftId: draft.id }),
+    receiveGoods(userId, { supplierName: "Sharma Traders", lines }, { draftId: draft.id }),
     (e) => e instanceof ServiceError && e.code === "conflict" && e.details?.statedTotalPaise === 795400 && e.details?.linesTotalPaise === 759360,
   );
   assert.deepEqual(await inventory(userId), before, "refused means rolled back");
   assert.ok(await getDraft(userId, draft.id), "and the draft is still there to fix");
 
-  await receiveGoods(userId, { supplierName: "Sharma Traders", reference: "SHM-001", lines, acceptTotalMismatch: true }, { draftId: draft.id });
+  await receiveGoods(userId, { supplierName: "Sharma Traders", lines, acceptTotalMismatch: true }, { draftId: draft.id });
   assert.equal((await inventory(userId)).confirmed, before.confirmed + 1);
 });
 
@@ -385,41 +383,46 @@ test("a second note with the same supplier and reference needs acknowledging bef
   assert.equal((await getDraft(userId, next.id))!.duplicateOf, null);
 });
 
-// A missing supplier or reference at confirm time cannot be checked for a
-// duplicate at all, so each fails closed the same way a real duplicate does:
-// refused without acceptDuplicate, received with it, nothing moves in between.
-for (const [label, fields] of [
-  ["reference", { supplierName: "Kaveri Wholesale Distributors" }],
-  ["supplier", { reference: "KWD/DN/4471" }],
-  ["both supplier and reference", {}],
-] as const) {
-  test(`a draft confirmed with no ${label} needs acknowledging, same as a real duplicate`, async () => {
-    const { userId, id } = await newShop();
-    const draft = await createDraft(userId, kaveri());
-    const lines = kaveriLines(id);
-    const before = await inventory(userId);
-
-    await assert.rejects(
-      receiveGoods(userId, { ...fields, lines }, { draftId: draft.id }),
-      (e) => e instanceof ServiceError && e.code === "conflict",
-    );
-    assert.deepEqual(await inventory(userId), before, "refused means nothing moved");
-
-    await receiveGoods(userId, { ...fields, lines, acceptDuplicate: true }, { draftId: draft.id });
-    assert.equal((await inventory(userId)).confirmed, before.confirmed + 1, "accepted, so it goes through");
-  });
-}
-
-test("the normal path — both supplier and reference present, no real duplicate — is unaffected", async () => {
+// The duplicate check's identity comes from the draft's own stored reference
+// and extraction, never the confirm payload — so a payload that omits them
+// cannot skip the check, and one that disagrees with them is refused outright
+// rather than quietly redefining which delivery this is.
+test("omitting supplier and reference at confirm time cannot skip the duplicate check", async () => {
   const { userId, id } = await newShop();
+  const lines = kaveriLines(id);
+  const first = await createDraft(userId, kaveri());
+  await receiveGoods(userId, { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", lines }, { draftId: first.id });
+
+  const again = await createDraft(userId, kaveri());
+  const before = await inventory(userId);
+  await assert.rejects(
+    receiveGoods(userId, { lines }, { draftId: again.id }),
+    (e) => e instanceof ServiceError && e.code === "conflict" && e.details?.duplicateOf === first.id,
+  );
+  assert.deepEqual(await inventory(userId), before, "refused means nothing moved");
+
+  await receiveGoods(userId, { lines, acceptDuplicate: true }, { draftId: again.id });
+  assert.equal((await inventory(userId)).confirmed, before.confirmed + 1, "accepted, so it goes through");
+});
+
+test("a confirm payload cannot change a draft's reference or supplier to a different value", async () => {
+  const { userId, id } = await newShop();
+  const lines = kaveriLines(id);
   const draft = await createDraft(userId, kaveri());
   const before = await inventory(userId);
-  // No acceptDuplicate needed: a first-ever (supplier, reference) pair for this account.
-  await receiveGoods(
-    userId,
-    { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", lines: kaveriLines(id) },
-    { draftId: draft.id },
+
+  await assert.rejects(
+    receiveGoods(userId, { reference: "SOME-OTHER-REF", lines }, { draftId: draft.id }),
+    (e) => e instanceof ServiceError && e.code === "conflict" && /reference does not match/.test(e.message),
   );
+  await assert.rejects(
+    receiveGoods(userId, { supplierName: "A Totally Different Supplier", lines }, { draftId: draft.id }),
+    (e) => e instanceof ServiceError && e.code === "conflict" && /supplier does not match/.test(e.message),
+  );
+  assert.deepEqual(await inventory(userId), before, "both refused, nothing moved");
+
+  // The matching, unmodified identity still goes through.
+  await receiveGoods(userId, { supplierName: "Kaveri Wholesale Distributors", reference: "KWD/DN/4471", lines }, { draftId: draft.id });
   assert.equal((await inventory(userId)).confirmed, before.confirmed + 1);
 });
 
@@ -450,15 +453,11 @@ test("supplier aliases: one per text even with no supplier, and text is compared
     (e) => isUniqueViolation(e, "supplier_aliases_key"),
   );
 
-  // A note with no supplier still teaches, and the lesson survives case and
-  // spacing — but with no supplier to scope a duplicate check against, it now
-  // needs the same acknowledgement a real duplicate would (the fail-closed
-  // rule added alongside the missing-field bypass fix: this account cannot
-  // tell "genuinely no supplier" from "a client that dropped one" either).
+  // A note with no supplier still teaches, and the lesson survives case and spacing.
   const draft = await createDraft(userId, kaveri({ supplierName: null }));
   await receiveGoods(
     userId,
-    { lines: [{ productId: id["STP-OIL-1L"], quantity: 1, unitCost: 15800, rawText: "Fortune Oil 1LTR" }], acceptTotalMismatch: true, acceptDuplicate: true },
+    { lines: [{ productId: id["STP-OIL-1L"], quantity: 1, unitCost: 15800, rawText: "Fortune Oil 1LTR" }], acceptTotalMismatch: true },
     { draftId: draft.id },
   );
   const [learned] = await matchLines(userId, null, [{ rawText: "  fortune   oil 1ltr ", code: null }]);
