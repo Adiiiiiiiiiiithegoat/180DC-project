@@ -15,10 +15,11 @@
  *     needs human approval (AI SDK tool approval) before execute ever runs.
  *
  * `server-only` makes importing this file from a client component a build
- * error: the Groq key and tool execution stay on the server.
+ * error: the provider key and tool execution stay on the server.
  */
 import "server-only";
 import { groq } from "@ai-sdk/groq";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   ToolLoopAgent,
   stepCountIs,
@@ -55,7 +56,31 @@ import {
  * model_not_found as of September 2026). gpt-oss-120b is Groq's strongest
  * tool-calling model on the free tier.
  */
-export const MODEL = "openai/gpt-oss-120b";
+const GROQ_MODEL = "openai/gpt-oss-120b";
+
+/**
+ * Chat provider switch. Anything other than exactly "deepseek" (including
+ * unset or a typo) stays on Groq, so a bad env value can never take
+ * production down.
+ */
+const CHAT_PROVIDER = process.env.CHAT_PROVIDER === "deepseek" ? "deepseek" : "groq";
+
+/**
+ * deepseek-v4-flash and deepseek-v4-flash-vision-exp are retired model ids.
+ * deepseek-v4-pro routes to V4.1 Flash from 2026-09-14 — deepseek-flash
+ * (DeepSeek-V4.1-Flash) is the current id to use directly.
+ */
+const DEEPSEEK_MODEL = "deepseek-flash";
+
+export const MODEL = process.env.CHAT_MODEL ?? (CHAT_PROVIDER === "deepseek" ? DEEPSEEK_MODEL : GROQ_MODEL);
+
+const deepseek = createOpenAICompatible({
+  name: "deepseek",
+  baseURL: "https://api.deepseek.com",
+  apiKey: process.env.DEEPSEEK_API_KEY,
+});
+
+const chatModel = CHAT_PROVIDER === "deepseek" ? deepseek(MODEL) : groq(MODEL);
 
 const dayMonthYear = new Intl.DateTimeFormat("en-GB", {
   timeZone: "UTC",
@@ -117,10 +142,10 @@ function logged<In, Out>(userId: string, toolName: string, execute: (input: In) 
     const startedAt = Date.now();
     try {
       const result = await execute(input);
-      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: true, userId }));
+      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: true, userId, provider: CHAT_PROVIDER }));
       return result;
     } catch (e) {
-      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: false, userId }));
+      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: false, userId, provider: CHAT_PROVIDER }));
       throw e;
     }
   };
@@ -326,15 +351,15 @@ export function createAssistant(userId: string, onBusy: (busy: Busy) => void, no
   if (!approvalSecret) throw new Error("TOOL_APPROVAL_SECRET is not set");
 
   return new ToolLoopAgent({
-    model: wrapLanguageModel({ model: groq(MODEL), middleware: backoffMiddleware(onBusy) }),
+    model: wrapLanguageModel({ model: chatModel, middleware: backoffMiddleware(onBusy) }),
     instructions: instructions(now),
     tools: assistantTools(userId),
     stopWhen: stepCountIs(8),
     // backoffMiddleware owns retries, so the user sees them; the SDK's own
     // retries would wait silently.
     maxRetries: 0,
-    // Reasoning tokens count against the free tier's 8,000 tokens a minute.
-    providerOptions: { groq: { reasoningEffort: "medium" } },
+    // Reasoning tokens count against the free tier's 8,000 tokens a minute. Groq-only option.
+    providerOptions: CHAT_PROVIDER === "groq" ? { groq: { reasoningEffort: "medium" } } : undefined,
     experimental_toolApprovalSecret: approvalSecret,
   });
 }
