@@ -7,6 +7,7 @@ import {
 import { createAssistant } from "@/lib/assistant";
 import { retryAfterSeconds } from "@/lib/backoff";
 import { unauthorized } from "@/lib/http";
+import { checkAssistantUsage, recordAssistantUsage } from "@/lib/rate-limit";
 import { sessionUserId } from "@/lib/session";
 
 /**
@@ -19,6 +20,19 @@ import { sessionUserId } from "@/lib/session";
 export async function POST(request: Request) {
   const userId = await sessionUserId(request);
   if (!userId) return unauthorized();
+
+  // Checked, and only then recorded, before anything below touches Groq: a
+  // blocked request never reaches createAssistant, so it costs nothing. The
+  // plain-text body (not JSON) is deliberate — useChat's transport throws
+  // response.text() verbatim as error.message, which chat.tsx pattern-matches
+  // on "usage_limited:<scope>:<seconds>" the same way it already does for
+  // "rate_limited:<seconds>" from Groq's own 429 (see onError below), while
+  // rendering the two as visibly different states.
+  const usage = await checkAssistantUsage(userId);
+  if (!usage.ok) {
+    return new Response(`usage_limited:${usage.scope}:${Math.ceil(usage.retryAfterSeconds)}`, { status: 429 });
+  }
+  await recordAssistantUsage(userId);
 
   const body = (await request.json().catch(() => null)) as { messages?: unknown } | null;
   if (!Array.isArray(body?.messages)) {

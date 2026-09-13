@@ -10,7 +10,7 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
     "verify:phase1": "tsx scripts/verify-phase1.ts --reset",
-    "test": "tsx --conditions=react-server --test --test-concurrency=1 src/**/*.test.ts",
+    "test": "tsx --conditions=react-server --experimental-test-module-mocks --test --test-concurrency=1 src/**/*.test.ts",
     "test:live": "tsx --conditions=react-server --test src/lib/extraction.live.ts",
     "seed": "tsx scripts/seed.ts --env .env.development.local --pool 20 --reset",
     "seed:report": "tsx scripts/seed-report.ts --env .env.development.local",

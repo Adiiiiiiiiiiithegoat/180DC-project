@@ -83,7 +83,7 @@ jobs:
           echo "CI runs:"
           printf '  %s\n' $files
           echo "CI skips: src/lib/analytics.test.ts (oracle test pinned to the seeded local branch — see comment above)"
-          npx tsx --conditions=react-server --test --test-concurrency=1 $files
+          npx tsx --conditions=react-server --experimental-test-module-mocks --test --test-concurrency=1 $files
 
   secret-scan:
     runs-on: ubuntu-latest

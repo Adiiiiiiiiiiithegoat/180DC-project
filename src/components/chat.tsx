@@ -62,6 +62,13 @@ export function Chat() {
   // A wait of more than two minutes is a daily limit: say so instead.
   const limitedFor = /^rate_limited:(\d+)$/.exec(error?.message ?? "");
   const waitSeconds = limitedFor ? Number(limitedFor[1]) : null;
+
+  // This app's own usage cap (route.ts, checked before Groq is ever called),
+  // not the provider being busy — kept visually and textually distinct from
+  // the countdown above so "you've used your allowance" never reads as "the
+  // app is broken". Never auto-retried: the wait is at least minutes long.
+  const usageLimited = /^usage_limited:(user|global):(\d+)$/.exec(error?.message ?? "");
+  const usageLimitedText = usageLimited && usageLimitedMessage(usageLimited[1] as "user" | "global", Number(usageLimited[2]));
   const autoRetries = useRef(0);
   const [retrying, setRetrying] = useState<{ until: number; attempt: number } | null>(null);
   useEffect(() => {
@@ -79,11 +86,12 @@ export function Chat() {
     if (status === "ready" && !error) autoRetries.current = 0;
   }, [status, error]);
   const errorText =
-    waitSeconds === null
+    usageLimitedText ??
+    (waitSeconds === null
       ? error?.message || "Something went wrong."
       : waitSeconds > 120
         ? `The free-tier model's limit is used up for now; try again in about ${Math.ceil(waitSeconds / 60)} minutes.`
-        : "The free-tier model is still at its limit. Try again in a minute.";
+        : "The free-tier model is still at its limit. Try again in a minute.");
 
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -144,7 +152,14 @@ export function Chat() {
       )}
 
       {error && !retrying && (
-        <div className="flex items-center gap-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+        <div
+          className={
+            usageLimitedText
+              ? "flex items-center gap-3 rounded border border-slate-300 bg-slate-100 px-3 py-2 text-sm text-slate-800"
+              : "flex items-center gap-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+          }
+        >
+          <span aria-hidden>{usageLimitedText ? "🔒" : null}</span>
           <span>{errorText}</span>
           <button type="button" className={buttonQuiet} onClick={() => regenerate()}>
             Try again
@@ -173,6 +188,23 @@ export function Chat() {
       </form>
       <div ref={end} />
     </div>
+  );
+}
+
+/** The wording for this app's own usage cap — proposed and reviewed before rate-limits shipped. */
+function usageLimitedMessage(scope: "user" | "global", seconds: number): string {
+  if (scope === "global") {
+    const hours = Math.max(1, Math.round(seconds / 3600));
+    return (
+      `The assistant has reached its shared daily limit across everyone using this demo. ` +
+      `This protects the shared API budget, not a sign anything is broken — try again in about ${hours} hour${hours === 1 ? "" : "s"}. ` +
+      `The rest of the app still works.`
+    );
+  }
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return (
+    `You've used this hour's assistant questions. ` +
+    `Try again in about ${minutes} minute${minutes === 1 ? "" : "s"} — the rest of the app still works.`
   );
 }
 
