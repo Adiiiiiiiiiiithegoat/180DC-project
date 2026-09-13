@@ -258,6 +258,30 @@ export const stockMovements = pgTable(
   ],
 );
 
+// Assistant abuse guard (DESIGN.md's rate-limit follow-up, not core shop
+// data): one row per accepted assistant request, counted in a trailing
+// window per user and globally by src/lib/rate-limit.ts. Postgres, not an
+// in-process counter — Vercel runs multiple function instances, and an
+// in-memory Map would give each one its own count, multiplying the real limit.
+export const assistantUsage = pgTable(
+  "assistant_usage",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: userId(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    // Per-user trailing-hour count and the oldest-row lookup that turns it
+    // into a retry-after both filter on (user_id, created_at).
+    index("assistant_usage_user_time_idx").on(t.userId, t.createdAt.desc()),
+    // The global trailing-day count scans every user, so it needs created_at
+    // on its own rather than riding the composite index above.
+    index("assistant_usage_time_idx").on(t.createdAt.desc()),
+  ],
+);
+
 export const productRelations = relations(products, ({ many }) => ({
   movements: many(stockMovements),
   promotions: many(promotions),

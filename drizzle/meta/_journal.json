@@ -36,6 +36,13 @@
       "when": 1789148841227,
       "tag": "0004_alias_nulls_receipt_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789296366499,
+      "tag": "0005_assistant_usage",
+      "breakpoints": true
     }
   ]
 }
