@@ -15,10 +15,18 @@
  * instances, and an in-memory counter would give each one its own count,
  * silently multiplying the real limit.
  *
- * This is a coarse safety net, not a billing meter: the check-then-insert
- * below is not wrapped in a transaction, so a burst of truly concurrent
- * requests can overshoot the limit by a handful. That is an acceptable
- * ceiling to be a few requests loose on, not a guarantee this module makes.
+ * checkAssistantUsage and recordAssistantUsage are two statements, not one
+ * transaction: a burst of truly concurrent requests can each pass the check
+ * before any of them has recorded, and overshoot the cap by a handful. That's
+ * deliberately left as-is, unlike recordSale's conditional stock decrement
+ * (services.ts, DESIGN.md section 5 rule 1), which *must* be race-free because
+ * a lost race there sells a unit of stock that does not exist — a correctness
+ * bug a customer feels. Here the count is a coarse abuse ceiling: the exact
+ * number of requests let through past the limit carries no correctness
+ * weight, only a cost one, so the two extra requests a race might allow are
+ * cheaper to accept than the transaction (and the row locking it implies) is
+ * worth adding for a limit whose defaults already sit a comfortable multiple
+ * above real usage.
  */
 import { and, count, eq, gte, min, type SQL } from "drizzle-orm";
 import { db } from "../db";
