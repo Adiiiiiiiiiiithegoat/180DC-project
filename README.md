@@ -35,7 +35,10 @@ exists so anyone reviewing this can sign in immediately.
 ## Setup
 
 **Prerequisites:** Node 24+, a Postgres 16 database (Neon or otherwise), a
-[Groq](https://console.groq.com) API key (free tier).
+[Groq](https://console.groq.com) API key (free tier) — required always,
+since receipt-upload extraction is Groq-only, and used for the assistant
+too unless `CHAT_PROVIDER=deepseek` is set (see
+[Environment variables](#environment-variables)).
 
 ```bash
 git clone https://github.com/Adiiiiiiiiiiithegoat/180DC-project.git
@@ -61,8 +64,13 @@ demo credentials above, or sign up fresh.
 | `BETTER_AUTH_SECRET` | Signs Better Auth session cookies. Any long random string. |
 | `BETTER_AUTH_URL` | Base URL Better Auth uses for callback links, e.g. `http://localhost:3000`. |
 | `TOOL_APPROVAL_SECRET` | Signs the assistant's tool-approval token, so a client can't fabricate an approval the model never asked for. Any long random string. |
-| `GROQ_API_KEY` | Powers the assistant and the receipt-upload extraction model. |
+| `GROQ_API_KEY` | Powers receipt-upload extraction always, and the assistant whenever `CHAT_PROVIDER` isn't `deepseek` — Groq is the default and the automatic fallback. |
+| `CHAT_PROVIDER` | Optional. `deepseek` switches the assistant (only) to DeepSeek-V4.1-Flash; anything else, including unset or a typo, stays on Groq, so a bad value can never take production down. Doesn't touch receipt extraction, which is Groq-only and not swappable. **Production currently runs `deepseek`.** |
+| `DEEPSEEK_API_KEY` | Required only when `CHAT_PROVIDER=deepseek`. |
+| `CHAT_MODEL` | Optional. Overrides the assistant's model id for whichever provider is active. |
 | `PG_POOL_MAX` | Optional. Max connections in the shared `pg` pool (default 10). |
+| `ASSISTANT_USER_HOURLY_LIMIT` | Optional. Assistant requests allowed per user per trailing hour (default 30) — see [Assistant rate limiting, two tiers](#security). |
+| `ASSISTANT_GLOBAL_DAILY_LIMIT` | Optional. Assistant requests allowed across every account per trailing day (default 500). |
 | `ENV_FILE` | Optional, scripts only. Which env file a script loads instead of the default `.env.test`. |
 | `WALKTHROUGH_URL` | Optional, scripts only. Base URL `npm run walkthrough` drives, for smoke-testing a deployed environment instead of localhost. |
 | `PRINT_SCHEMAS` | Optional, debug only. Prints the assistant's tool JSON schemas during that test run. |
@@ -255,14 +263,25 @@ and `TOOL_APPROVAL_SECRET` signs the approval so a client can't replay a
 call the model never actually proposed. Nothing is written until a person
 clicks Approve.
 
-**What the model reads is trimmed, not what's computed.** Groq's free tier
-allows 8,000 tokens and roughly 30 requests a minute, and one multi-step
-question resends the whole conversation at every step. So tool results are
-cut down on the way to the model only — ids dropped except where the next
-call needs them, rows capped, money in rows rounded to whole rupees while
-shop-wide totals keep their paise (so the figure the assistant quotes is
-identical to the dashboard's) — while the dashboard and the database see
-the functions' full, untrimmed output.
+**The chat provider is swappable; the extraction model isn't.**
+`CHAT_PROVIDER=deepseek` switches the assistant (only) to DeepSeek-V4.1-Flash
+via the AI SDK's OpenAI-compatible provider against `api.deepseek.com`;
+anything else, including unset, stays on Groq, so a bad value can never take
+production down. `CHAT_MODEL` optionally overrides the model id for whichever
+provider is active. **Production currently runs `CHAT_PROVIDER=deepseek`.**
+Receipt-upload extraction (below) always calls Groq directly
+(`src/lib/extraction.ts`) and has no equivalent switch.
+
+**What the model reads is trimmed, not what's computed.** This applies no
+matter which provider is answering: tool results are cut down on the way to
+the model only — ids dropped except where the next call needs them, rows
+capped, money in rows rounded to whole rupees while shop-wide totals keep
+their paise (so the figure the assistant quotes is identical to the
+dashboard's) — while the dashboard and the database see the functions' full,
+untrimmed output. It was originally forced by Groq's free tier (8,000 tokens
+and roughly 30 requests a minute, and one multi-step question resends the
+whole conversation at every step); DeepSeek's paid balance isn't bound by
+that ceiling, but trimming is worth keeping regardless of provider.
 
 ## Reorder methodology
 
@@ -419,10 +438,10 @@ than "the app is broken."
 ## Testing
 
 Run with `npm test` (every `src/**/*.test.ts`) or `npm run typecheck`.
-**78 tests, 78 passing** as of this write-up (`npm test`, verified with a
-clean run against both the Neon `dev` and `local` branches). CI runs a
-subset — see [What CI does not cover](#what-ci-does-not-cover) below for
-exactly which file and why.
+**86 tests, 86 passing** as of this write-up (`npm test`, verified with a
+clean run against the Neon `dev` branch). CI runs a subset — see
+[What CI does not cover](#what-ci-does-not-cover) below for exactly which
+file and why.
 
 **What the concurrency tests prove, specifically:**
 
@@ -481,6 +500,51 @@ tying the two together. Preview deployments happen for every pull request.
 Secrets (`GROQ_API_KEY`, `BETTER_AUTH_SECRET`, `DATABASE_URL`, etc.) are
 Vercel environment variables, production-only, never committed.
 
+### Migration ordering
+
+`next build` does not run migrations — the only thing that ever applies
+`drizzle/*.sql` to a database is `npm run db:migrate` (`scripts/migrate.ts`),
+run by hand or in CI's own job, never automatically by Vercel. Combined with
+deploying independently of CI (above), a merge carrying both a schema change
+and code that depends on it can go live in the wrong order: Vercel deploys
+the new code the moment `master` updates, whether or not anyone has run the
+migration against production yet.
+
+This is exactly what took `/api/chat` down once: the two-tier rate limiter
+(`6f4e696`, `d1934a6`) added both `drizzle/0005_assistant_usage.sql` (the
+`assistant_usage` table) and the route check that inserts into it
+(`src/app/api/chat/route.ts`) in the same merge. Vercel deployed the route
+code on merge; the production migration hadn't been run yet, so every
+`/api/chat` request failed — `relation "assistant_usage" does not exist` —
+until `npx tsx scripts/migrate.ts --env .env.local` was run by hand.
+
+**The procedure, decided before writing the migration, not after:**
+
+1. **Old code survives the new schema unmodified** (an added table, an added
+   nullable column, a new index) → **migrate first, deploy after.** Old code
+   never looks at what's new, so there's no window where anything is broken.
+2. **New code survives the old schema unmodified** (dropping a column or
+   table nothing in the new code reads or writes, tightening a constraint
+   nothing in the new code would violate) → **deploy first, migrate after**,
+   once the new code is confirmed live and healthy. Nothing live still needs
+   what the migration removes.
+3. **Neither is true** (a rename, a type change, anything old and new code
+   can't both tolerate) → two migrations either side of the deploy
+   (expand/contract): migrate to add the new shape alongside the old, deploy
+   code that writes both and reads the new one with a fallback, backfill,
+   then migrate again to drop the old shape once nothing reads it. A single
+   atomic cutover migration for this case is what caused the incident above
+   — `assistant_usage` should have been migrated in first, since nothing
+   about adding a new table could break the code already running.
+
+Run the migration against production explicitly
+(`npx tsx scripts/migrate.ts --env .env.local`, per
+[Environment separation](#environment-separation) — never the destructive
+`--reset` path from
+[Reseeding is not a maintenance tool](#reseeding-is-not-a-maintenance-tool)),
+at the point the decision above calls for it, rather than assuming it
+happens as part of the Vercel build. It doesn't.
+
 ## AI coding tools used and how
 
 Built with **Claude Code** throughout, under the phased plan in
@@ -516,11 +580,17 @@ DESIGN.md argues for, not an oversight:
 - **Deploys are not gated on CI.** Vercel deploys on every push
   independently of whether GitHub Actions has passed — see
   [CI/CD and deployment](#cicd-and-deployment).
-- **Groq's free tier bounds both AI features.** The assistant: ~8,000
-  tokens and ~30 requests a minute. Receipt extraction: 7,000 input and
-  1,000 output tokens a minute, output capped at ~700 tokens (roughly 16
-  line items a note) to leave room for two uploads a minute; a 429 is
-  waited out using the response's `Retry-After` header.
+- **Receipt extraction is bound by Groq's free tier; the assistant no
+  longer necessarily is.** Extraction (`src/lib/extraction.ts`, Groq only,
+  not swappable): 7,000 input and 1,000 output tokens a minute, output
+  capped at ~700 tokens (roughly 16 line items a note) to leave room for two
+  uploads a minute. The assistant defaults to that same free tier (~8,000
+  tokens, ~30 requests a minute) unless `CHAT_PROVIDER=deepseek` is set —
+  production currently runs DeepSeek-V4.1-Flash on a paid balance, so that
+  ceiling doesn't bind production today, but an unset or bad `CHAT_PROVIDER`
+  always falls back to Groq. Either way, a 429 is waited out using the
+  response's `Retry-After` header (`src/lib/backoff.ts`), never surfaced as
+  a hard error, for whichever provider is active.
 - **Dev, local, and production share one Neon role's password.** They're
   separated by hostname, not by credential — a real second environment
   would use separate roles. See [Environment separation](#environment-separation)
