@@ -142,10 +142,10 @@ function logged<In, Out>(userId: string, toolName: string, execute: (input: In) 
     const startedAt = Date.now();
     try {
       const result = await execute(input);
-      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: true, userId }));
+      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: true, userId, provider: CHAT_PROVIDER }));
       return result;
     } catch (e) {
-      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: false, userId }));
+      console.log(JSON.stringify({ tool: toolName, durationMs: Date.now() - startedAt, ok: false, userId, provider: CHAT_PROVIDER }));
       throw e;
     }
   };
