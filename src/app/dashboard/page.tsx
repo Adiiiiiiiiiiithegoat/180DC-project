@@ -279,6 +279,10 @@ export default async function DashboardPage() {
                   <tr key={p.id} className="border-b border-stone-100">
                     <td className={td}>
                       <Link href={`/products/${p.id}`} className={`font-medium ${link}`}>{p.name}</Link>
+                      <div className="mt-0.5 text-xs text-stone-500">
+                        Sells about {p.inputs?.meanDailyUnits}/day, {p.inputs?.leadTimeDays}-day lead time
+                        {p.daysToStockout !== null && `, ~${p.daysToStockout} days of stock left`}
+                      </div>
                     </td>
                     <td className={`${td} text-right tabular-nums`}>{p.inputs?.onHand}</td>
                     <td className={`${td} text-right tabular-nums`}>{p.inputs?.meanDailyUnits}</td>
