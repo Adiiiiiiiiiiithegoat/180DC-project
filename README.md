@@ -347,7 +347,7 @@ received.
 2. **The file's type comes from its bytes** (magic numbers), never the
    client's declared MIME type. 20 MB max; junk, blank pages, and oversize
    files are refused before any model call.
-3. **Extraction:** `qwen/qwen3.6-27b` on Groq, JSON mode, no reasoning.
+3. **Extraction:** `qwen/qwen3.8-27b` on Groq, JSON mode, no reasoning.
    Numbers are *transcribed, never calculated* — a wrong total on the paper
    is exactly what the review screen needs to see, not something the model
    silently corrects.

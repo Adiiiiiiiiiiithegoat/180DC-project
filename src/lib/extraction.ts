@@ -39,7 +39,7 @@ import { backoffMiddleware, retryAfterSeconds, type Busy } from "./backoff";
 import { ServiceError } from "./services";
 
 /** Groq's multimodal model. Each image costs 2,048 input tokens before any text. */
-export const EXTRACTION_MODEL = "qwen/qwen3.6-27b";
+export const EXTRACTION_MODEL = "qwen/qwen3.8-27b";
 /** Groq's image limit, and ours for any upload. */
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 /**
