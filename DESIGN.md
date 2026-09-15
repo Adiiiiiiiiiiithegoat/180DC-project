@@ -123,7 +123,7 @@ Confirming a draft runs the same code path as manual entry.
   20 MB maximum. Junk, blank pages and oversize files are refused before any
   model call; a photo of something else is refused by the model. None of them
   writes anything.
-- **Extraction:** `qwen/qwen3.6-27b` on Groq, JSON mode, no reasoning, one image
+- **Extraction:** `qwen/qwen3.8-27b` on Groq, JSON mode, no reasoning, one image
   per request (2,048 input tokens). PDFs are sent as their text layer, since
   Groq takes no PDFs and text is cheaper and more accurate than an image of the
   page; a scanned PDF with no text is refused with a request for a photo. The
